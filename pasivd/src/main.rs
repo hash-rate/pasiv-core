@@ -18,13 +18,15 @@
 //!     sha256-verified against a compile-time pin before first run
 
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::time::Duration;
 
 use pasiv_core::address::is_valid_xmr_address;
 use pasiv_core::fee::{self, PayoutSide, SliceScheduler, SwapFailure, FEE_ADDRESS_XMR};
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
+mod doctor;
+mod xmrig;
+use doctor::cmd_doctor;
+use xmrig::{ensure_xmrig, spawn_xmrig, xmrig_current_user, xmrig_set_user, xmrig_summary, Miner};
 
 /// Write the device config. It holds the device secret — a bearer credential
 /// for this node's cloud identity — so it must never be world-readable, which
@@ -62,24 +64,26 @@ const DEFAULT_FN_URL: &str = "https://vmmiuftvngxgwimwlrke.supabase.co/functions
 const DEFAULT_ANON_KEY: &str = "sb_publishable_lp01D57d8gnuW49kelunDg_6c_ld5Lb";
 const DEFAULT_POOL: &str = "gulf.moneroocean.stream:10128";
 
-fn fn_url() -> String {
+pub(crate) fn fn_url() -> String {
     std::env::var("PASIVD_API_URL").unwrap_or_else(|_| DEFAULT_FN_URL.into())
 }
-fn anon_key() -> String {
+pub(crate) fn anon_key() -> String {
     std::env::var("PASIVD_ANON_KEY").unwrap_or_else(|_| DEFAULT_ANON_KEY.into())
 }
-fn pool() -> String {
+pub(crate) fn pool() -> String {
     std::env::var("PASIVD_POOL").unwrap_or_else(|_| DEFAULT_POOL.into())
 }
-const XMRIG_URL: &str =
+pub(crate) const XMRIG_URL: &str =
     "https://github.com/xmrig/xmrig/releases/download/v6.26.0/xmrig-6.26.0-linux-static-x64.tar.gz";
 /// sha256 of the release TARBALL, checked before it is even decompressed.
-const XMRIG_SHA256: &str = "fc6f8ae5f64e4f17481f7e3be29a1c56949f216a998414188003eae1db20c9e5";
+pub(crate) const XMRIG_SHA256: &str =
+    "fc6f8ae5f64e4f17481f7e3be29a1c56949f216a998414188003eae1db20c9e5";
 /// sha256 of the EXTRACTED binary, re-checked on every start so a cached file
 /// can never drift from what we pinned (and so a version bump actually lands).
-const XMRIG_BIN_SHA256: &str = "b20f39fc00d242e706b6c30367ad811c676e0575050a4ec2f30104b696944b49";
-const XMRIG_DIR_IN_TAR: &str = "xmrig-6.26.0";
-const HTTP_PORT: u16 = 42999;
+pub(crate) const XMRIG_BIN_SHA256: &str =
+    "b20f39fc00d242e706b6c30367ad811c676e0575050a4ec2f30104b696944b49";
+pub(crate) const XMRIG_DIR_IN_TAR: &str = "xmrig-6.26.0";
+pub(crate) const HTTP_PORT: u16 = 42999;
 
 /// Live XMR network stats, same source the desktop's profit ranking uses
 /// (src-tauri/src/coins: monero's `stats_url`). Public, key-free.
@@ -90,17 +94,17 @@ const XMR_STATS_URL: &str = "https://monero.herominers.com/api/stats";
 // machine (`fee::SliceScheduler`) come from the shared pasiv-core crate. The
 // desktop supervisor drives the same scheduler.
 
-const VERSION: &str = concat!("pasivd ", env!("CARGO_PKG_VERSION"));
+pub(crate) const VERSION: &str = concat!("pasivd ", env!("CARGO_PKG_VERSION"));
 
 #[derive(Serialize, Deserialize, Clone)]
-struct DeviceConfig {
+pub(crate) struct DeviceConfig {
     device_id: String,
     secret: String,
     #[serde(default)]
     payout_xmr: Option<String>,
 }
 
-fn config_path() -> PathBuf {
+pub(crate) fn config_path() -> PathBuf {
     if let Ok(p) = std::env::var("PASIVD_CONFIG") {
         return PathBuf::from(p);
     }
@@ -118,7 +122,7 @@ fn config_path() -> PathBuf {
     PathBuf::from(home).join(".config/pasivd/config.json")
 }
 
-fn data_dir() -> PathBuf {
+pub(crate) fn data_dir() -> PathBuf {
     if std::fs::create_dir_all("/var/lib/pasivd").is_ok() {
         return PathBuf::from("/var/lib/pasivd");
     }
@@ -134,7 +138,7 @@ fn hostname() -> String {
         .unwrap_or_else(|_| "pasivd-node".into())
 }
 
-async fn api(
+pub(crate) async fn api(
     client: &reqwest::Client,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -151,177 +155,6 @@ async fn api(
         return Err(format!("{status}: {v}"));
     }
     Ok(v)
-}
-
-// --------------------------------------------------------------- doctor ----
-
-/// One diagnostic pass, greppable output (`PASS|WARN|FAIL <id> — <detail>`),
-/// exit 1 iff any FAIL — systemd/cron friendly. Self-contained on purpose:
-/// pasivd shares no code with the desktop (the tolerated-drift pattern this
-/// file already uses for the fee engine), so these checks mirror the desktop
-/// doctor's SHAPE, not its source. Adopted from the 2026-08-17 Darkbloom
-/// provider audit (pasiv docs/DEPIN-SPIKE.md §10.4).
-async fn cmd_doctor() -> Result<(), String> {
-    let mut failed = false;
-    let mut report = |status: &str, id: &str, detail: String| {
-        if status == "FAIL" {
-            failed = true;
-        }
-        println!("{status} {id} — {detail}");
-    };
-
-    // config: present, parseable, secret not world-readable.
-    let path = config_path();
-    let cfg: Option<DeviceConfig> = match std::fs::read_to_string(&path) {
-        Ok(raw) => match serde_json::from_str::<DeviceConfig>(&raw) {
-            Ok(c) => {
-                report("PASS", "config", format!("{} loads", path.display()));
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(meta) = std::fs::metadata(&path) {
-                        let mode = meta.permissions().mode() & 0o777;
-                        if mode & 0o077 != 0 {
-                            report(
-                                "WARN",
-                                "config.perms",
-                                format!(
-                                    "{path:?} is 0o{mode:o} — the device secret should be 0600",
-                                    path = path
-                                ),
-                            );
-                        } else {
-                            report("PASS", "config.perms", format!("0o{mode:o}"));
-                        }
-                    }
-                }
-                Some(c)
-            }
-            Err(e) => {
-                report("FAIL", "config", format!("{}: {e}", path.display()));
-                None
-            }
-        },
-        Err(_) => {
-            report(
-                "WARN",
-                "config",
-                format!("{} missing — run `pasivd claim` first", path.display()),
-            );
-            None
-        }
-    };
-
-    // payout: the address every share pays to.
-    match cfg.as_ref().and_then(|c| c.payout_xmr.as_deref()) {
-        Some(a) if is_valid_xmr_address(a) => {
-            report("PASS", "payout", "XMR address shape ok".into())
-        }
-        Some(_) => report(
-            "FAIL",
-            "payout",
-            "saved XMR address has the wrong shape".into(),
-        ),
-        None => report(
-            "WARN",
-            "payout",
-            "no payout set — approve the claim in the companion to receive one".into(),
-        ),
-    }
-
-    // miner binary: present + still matching the pin (a drifted cache is the
-    // desktop's v0.4.28 bug class).
-    let bin = data_dir().join("xmrig");
-    if bin.exists() {
-        match std::fs::read(&bin) {
-            Ok(bytes) => {
-                let got = hex::encode(sha2::Sha256::digest(&bytes));
-                if got == XMRIG_BIN_SHA256 {
-                    report("PASS", "binary", "xmrig matches the pinned sha256".into());
-                } else {
-                    report(
-                        "FAIL",
-                        "binary",
-                        format!("xmrig sha256 {got} != pinned — will be re-fetched on next run"),
-                    );
-                }
-            }
-            Err(e) => report("FAIL", "binary", format!("xmrig unreadable: {e}")),
-        }
-    } else {
-        report(
-            "WARN",
-            "binary",
-            "xmrig not fetched yet — `pasivd run` provisions it".into(),
-        );
-    }
-
-    // pool: TCP reach on the stratum port (a Cloudflare-parked host connects
-    // on 443 and never here — the desktop's AlphaPool trap).
-    {
-        use std::net::{TcpStream, ToSocketAddrs};
-        let started = std::time::Instant::now();
-        let pool = pool();
-        let ok = pool
-            .to_socket_addrs()
-            .ok()
-            .into_iter()
-            .flatten()
-            .any(|a| TcpStream::connect_timeout(&a, std::time::Duration::from_secs(3)).is_ok());
-        if ok {
-            report(
-                "PASS",
-                "pool.stratum",
-                format!("{pool} in {}ms", started.elapsed().as_millis()),
-            );
-        } else {
-            report("FAIL", "pool.stratum", format!("{pool} unreachable"));
-        }
-    }
-
-    // fee ledger: readable + parse count (same JSONL the desktop writes).
-    let ledger = fee_ledger_path();
-    match std::fs::read_to_string(&ledger) {
-        Ok(raw) => {
-            let total = raw.lines().filter(|l| !l.trim().is_empty()).count();
-            let parsed = fee::parse_ledger(&raw).len();
-            if parsed == total {
-                report("PASS", "fee.ledger", format!("{parsed} events"));
-            } else {
-                report(
-                    "WARN",
-                    "fee.ledger",
-                    format!("{parsed}/{total} lines parse — the rest are garbled"),
-                );
-            }
-        }
-        Err(_) => report("PASS", "fee.ledger", "no ledger yet (no fee slices)".into()),
-    }
-
-    // cloud: one real poll with the device's own credentials — the same call
-    // `run` lives on. Offline is a WARN, not a FAIL: mining continues without
-    // the uplink; only stale companion data results.
-    if let Some(cfg) = &cfg {
-        let client = reqwest::Client::new();
-        match api(
-            &client,
-            serde_json::json!({"action":"poll","device_id":cfg.device_id,"secret":cfg.secret}),
-        )
-        .await
-        {
-            Ok(_) => report(
-                "PASS",
-                "cloud",
-                "poll ok — device is claimed and linked".into(),
-            ),
-            Err(e) => report("WARN", "cloud", format!("poll failed: {e}")),
-        }
-    }
-
-    if failed {
-        std::process::exit(1);
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------- claim ----
@@ -387,223 +220,7 @@ async fn cmd_claim() -> Result<(), String> {
     Err("claim window expired — run `pasivd claim` again".into())
 }
 
-// ---------------------------------------------------------------- xmrig ----
-
-async fn ensure_xmrig(client: &reqwest::Client) -> Result<PathBuf, String> {
-    let bin = data_dir().join("xmrig");
-    // Verify on EVERY start, not just first install. Checking only `exists()`
-    // meant the pin ran once in a machine's lifetime: a tampered or truncated
-    // binary was then trusted forever, and bumping XMRIG_SHA256 in a new
-    // release was a no-op on every existing node — we could never ship an
-    // xmrig security update.
-    if bin.exists() {
-        match std::fs::read(&bin) {
-            Ok(bytes) if hex::encode(sha2::Sha256::digest(&bytes)) == XMRIG_BIN_SHA256 => {
-                return Ok(bin)
-            }
-            Ok(_) => {
-                eprintln!("xmrig on disk failed verification — refetching");
-                let _ = std::fs::remove_file(&bin);
-            }
-            Err(e) => {
-                eprintln!("could not read cached xmrig ({e}) — refetching");
-                let _ = std::fs::remove_file(&bin);
-            }
-        }
-    }
-    println!("fetching xmrig (sha256-verified)…");
-    let bytes = client
-        .get(XMRIG_URL)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .await
-        .map_err(|e| e.to_string())?;
-    let digest = hex::encode(sha2::Sha256::digest(&bytes));
-    if digest != XMRIG_SHA256 {
-        return Err(format!("xmrig checksum mismatch: {digest}"));
-    }
-    let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(&bytes[..]));
-    let mut ar = tar::Archive::new(gz);
-    let want = format!("{XMRIG_DIR_IN_TAR}/xmrig");
-    // Unpack to a temp path and rename into place: writing straight to `bin`
-    // meant a crash mid-unpack left a truncated binary that the old
-    // exists()-only check would then execute forever.
-    let partial = bin.with_extension("partial");
-    let _ = std::fs::remove_file(&partial);
-    for entry in ar.entries().map_err(|e| e.to_string())? {
-        let mut entry = entry.map_err(|e| e.to_string())?;
-        // Only ever unpack a regular file. A symlink entry would otherwise be
-        // created at our destination and the chmod/exec would follow it.
-        if !entry.header().entry_type().is_file() {
-            continue;
-        }
-        if entry.path().map_err(|e| e.to_string())?.to_string_lossy() == want {
-            entry.unpack(&partial).map_err(|e| e.to_string())?;
-        }
-    }
-    if !partial.exists() {
-        return Err("xmrig not found in archive".into());
-    }
-    let got = hex::encode(sha2::Sha256::digest(
-        std::fs::read(&partial).map_err(|e| e.to_string())?,
-    ));
-    if got != XMRIG_BIN_SHA256 {
-        let _ = std::fs::remove_file(&partial);
-        return Err(format!("extracted xmrig checksum mismatch: {got}"));
-    }
-    std::fs::rename(&partial, &bin).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755));
-    }
-    Ok(bin)
-}
-
-struct Miner {
-    child: tokio::process::Child,
-    token: String,
-}
-
-/// Write the `http` block xmrig should serve, readable only by this user —
-/// 0600, unlinked first so a looser pre-existing file can't be inherited.
-/// The token gates an UNRESTRICTED local API (it can rewrite the payout
-/// address), and process argv is world-readable on Linux
-/// (`/proc/<pid>/cmdline`) — so the token must never travel there. This
-/// mirrors the desktop adapter's runtime config exactly; SECURITY.md §"local
-/// miner API" is the rationale, and it applies to the daemon no less than the
-/// app. `restricted: false` is load-bearing: restricted mode 403s /1/config
-/// and /2/config even to an authenticated caller, so the fee scheduler could
-/// not swap the pool login back, tripped its own fail-safe, and stopped
-/// mining (the 0.1.0 → 0.1.1 bug — the flag just lives in the config now).
-fn write_xmrig_runtime(path: &std::path::Path, token: &str) -> Result<(), String> {
-    let body = serde_json::json!({
-        "http": {
-            "enabled": true,
-            "host": "127.0.0.1",
-            "port": HTTP_PORT,
-            "access-token": token,
-            "restricted": false,
-        }
-    });
-    let _ = std::fs::remove_file(path);
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|e| format!("write {}: {e}", path.display()))?;
-        f.write_all(body.to_string().as_bytes())
-            .map_err(|e| e.to_string())?;
-        #[allow(clippy::needless_return)]
-        return Ok(());
-    }
-    #[cfg(not(unix))]
-    std::fs::write(path, body.to_string()).map_err(|e| e.to_string())
-}
-
-/// The exact xmrig command line for a headless node. Pure and unit-tested on
-/// purpose: a missing flag here fails silently at runtime, not at build. Only
-/// the pool, the payout, and the runtime-config path travel in argv — the
-/// whole `http` block (with its token) is in the 0600 file behind `-c`.
-fn xmrig_args(payout: &str, runtime_config: &str) -> Vec<String> {
-    vec![
-        "-o".into(),
-        pool(),
-        "-u".into(),
-        payout.into(),
-        "-p".into(),
-        "pasiv".into(),
-        "-k".into(),
-        "--donate-level".into(),
-        "1".into(),
-        "--no-color".into(),
-        "-c".into(),
-        runtime_config.into(),
-    ]
-}
-
-fn spawn_xmrig(bin: &PathBuf, payout: &str, token: &str) -> Result<tokio::process::Child, String> {
-    let runtime = data_dir().join("xmrig-runtime.json");
-    write_xmrig_runtime(&runtime, token)?;
-    tokio::process::Command::new(bin)
-        .args(xmrig_args(payout, &runtime.to_string_lossy()))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("spawn xmrig: {e}"))
-}
-
-async fn xmrig_summary(client: &reqwest::Client, token: &str) -> Option<serde_json::Value> {
-    client
-        .get(format!("http://127.0.0.1:{HTTP_PORT}/2/summary"))
-        .bearer_auth(token)
-        .timeout(Duration::from_secs(3))
-        .send()
-        .await
-        .ok()?
-        .json()
-        .await
-        .ok()
-}
-
-/// What address xmrig is ACTUALLY logged in with right now. The reconciler
-/// compares against this rather than a local boolean, so a swap that silently
-/// didn't apply — or an outside party rewriting the config through the same
-/// local API — gets corrected on the next tick instead of persisting.
-async fn xmrig_current_user(client: &reqwest::Client, token: &str) -> Option<String> {
-    let cfg: serde_json::Value = client
-        .get(format!("http://127.0.0.1:{HTTP_PORT}/2/config"))
-        .bearer_auth(token)
-        .timeout(Duration::from_secs(3))
-        .send()
-        .await
-        .ok()?
-        .json()
-        .await
-        .ok()?;
-    cfg["pools"][0]["user"].as_str().map(|s| s.to_string())
-}
-
-/// Swap the pool login (fee slice ↔ payout) via config hot-reload — identical
-/// mechanism to the desktop: the RandomX dataset derives from the chain seed,
-/// not the login, so this costs nothing.
-async fn xmrig_set_user(client: &reqwest::Client, token: &str, user: &str) -> bool {
-    let Ok(resp) = client
-        .get(format!("http://127.0.0.1:{HTTP_PORT}/2/config"))
-        .bearer_auth(token)
-        .timeout(Duration::from_secs(3))
-        .send()
-        .await
-    else {
-        return false;
-    };
-    let Ok(mut cfg) = resp.json::<serde_json::Value>().await else {
-        return false;
-    };
-    if let Some(pool) = cfg["pools"].get_mut(0) {
-        pool["user"] = serde_json::json!(user);
-    } else {
-        return false;
-    }
-    client
-        .put(format!("http://127.0.0.1:{HTTP_PORT}/1/config"))
-        .bearer_auth(token)
-        .json(&cfg)
-        .timeout(Duration::from_secs(3))
-        .send()
-        .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false)
-}
-
-fn fee_ledger_path() -> PathBuf {
+pub(crate) fn fee_ledger_path() -> PathBuf {
     // Overridable like PASIVD_CONFIG, so tests never append to a live node's
     // audit trail and operators can put it on a different volume.
     if let Ok(p) = std::env::var("PASIVD_FEE_LEDGER") {
@@ -656,27 +273,24 @@ fn now_unix_secs() -> u64 {
 
 // -------------------------------------------------------------- earnings ----
 
-/// USD/day earned per **H/s** on XMR, from raw inputs. This is the desktop's
-/// `profit::score` (src-tauri/src/profit) without its ×1000 kH/s scaling, so a
-/// caller multiplies by the miner's raw hashrate to get an est $/day. Pure, so
-/// it is unit-tested; None on any non-positive input, exactly like `score`.
-fn xmr_usd_per_hs(
+/// USD/day earned per **kH/s** on XMR, from raw inputs — the shared crate's
+/// `profit::score` verbatim; the $/day figure itself then comes from
+/// `pasiv_core::earnings::usd_per_day`, the SAME function the desktop's
+/// est_usd_day command uses. Parity is by construction, not by mirroring.
+fn xmr_rate_per_kh(
     price_usd: f64,
     reward_atomic: f64,
     coin_units: f64,
     difficulty: f64,
 ) -> Option<f64> {
-    // The shared crate's score() is USD/day per kH/s; per H/s is ÷ 1000.
-    // Parity with the desktop is by construction — same function, same crate.
     pasiv_core::profit::score(price_usd, reward_atomic, coin_units, difficulty)
-        .map(|kh| kh / 1000.0)
 }
 
 /// Fetch the current USD/day-per-H/s rate from the same public data the desktop
 /// uses: CoinGecko for the price, HeroMiners for network difficulty and block
 /// reward. Never throws — a headless node must keep mining even if the estimate
 /// is briefly unavailable; the card just omits `≈ $/day` until the next refresh.
-async fn xmr_rate_per_hs(client: &reqwest::Client) -> Option<f64> {
+async fn fetch_xmr_rate_per_kh(client: &reqwest::Client) -> Option<f64> {
     let price = client
         .get("https://api.coingecko.com/api/v3/simple/price?ids=monero&vs_currencies=usd")
         .timeout(Duration::from_secs(8))
@@ -708,7 +322,7 @@ async fn xmr_rate_per_hs(client: &reqwest::Client) -> Option<f64> {
         .filter(|r| *r > 0.0)
         .or_else(|| num(&v["lastblock"]["reward"]))?;
     let units = num(&v["config"]["coinUnits"]).filter(|u| *u > 0.0)?;
-    xmr_usd_per_hs(price, reward, units, difficulty)
+    xmr_rate_per_kh(price, reward, units, difficulty)
 }
 
 /// The `snapshot` the companion renders from: the rollup state, a single
@@ -717,14 +331,14 @@ async fn xmr_rate_per_hs(client: &reqwest::Client) -> Option<f64> {
 /// known. Pure and unit-tested: omitting the lane or the estimate is exactly
 /// what showed a headless node as a bare "Mining" with no numbers (the 0.1.2
 /// fix), and a fabricated est on an idle/zero-hashrate node would be a lie.
-fn build_snapshot(state: &str, hashrate: f64, rate_per_hs: Option<f64>) -> serde_json::Value {
+fn build_snapshot(state: &str, hashrate: f64, rate_per_kh: Option<f64>) -> serde_json::Value {
     let mut snapshot = serde_json::json!({
         "rollup": {"state": state},
         "miners": {"xmrig": {"state": state}},
     });
     if state == "mining" && hashrate > 0.0 {
-        if let Some(rate) = rate_per_hs {
-            snapshot["est_usd_day"] = serde_json::json!(rate * hashrate);
+        if let Some(est) = pasiv_core::earnings::usd_per_day(hashrate, rate_per_kh) {
+            snapshot["est_usd_day"] = serde_json::json!(est);
         }
     }
     snapshot
@@ -780,7 +394,7 @@ async fn cmd_run() -> Result<(), String> {
         .user_agent(concat!("pasivd/", env!("CARGO_PKG_VERSION")))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
-    let mut rate_per_hs: Option<f64> = None;
+    let mut rate_per_kh: Option<f64> = None;
 
     println!("{VERSION} — node {} → {}", hostname(), pool());
 
@@ -791,8 +405,8 @@ async fn cmd_run() -> Result<(), String> {
         // Refresh the earnings rate once at startup and ~every 10 min after.
         // A failure keeps the last known rate (or none) and retries next cycle.
         if tick == 1 || tick.is_multiple_of(120) {
-            if let Some(r) = xmr_rate_per_hs(&rate_client).await {
-                rate_per_hs = Some(r);
+            if let Some(r) = fetch_xmr_rate_per_kh(&rate_client).await {
+                rate_per_kh = Some(r);
             }
         }
 
@@ -901,7 +515,7 @@ async fn cmd_run() -> Result<(), String> {
         } else {
             "idle"
         };
-        let snapshot = build_snapshot(state, last_hashrate, rate_per_hs);
+        let snapshot = build_snapshot(state, last_hashrate, rate_per_kh);
         let push = api(
             &client,
             serde_json::json!({
@@ -1088,22 +702,24 @@ mod tests {
         assert!(!is_valid_xmr_address(&format!("4{}", "0".repeat(94)))); // '0' not in base58
     }
 
-    /// The est $/day the card shows. This is the desktop's `profit::score`
-    /// without the ×1000 kH/s scaling, so a caller multiplies by raw H/s.
+    /// The est $/day the card shows: `profit::score` for the per-kH/s rate and
+    /// `earnings::usd_per_day` for the figure — the SAME two shared functions
+    /// the desktop uses, so parity is by construction rather than mirroring.
     #[test]
     fn xmr_earnings_math_matches_the_desktop_score() {
         // score(price, reward, units, diff) = 86400·1000·price·(reward/units)/diff
-        // is USD/day per kH/s; per H/s is that ÷ 1000. Concrete sanity numbers:
-        // price $160, reward 0.6 XMR (6e11 atomic, 1e12 units), diff 400e9.
-        let per_hs = xmr_usd_per_hs(160.0, 6e11, 1e12, 400e9).unwrap();
-        // 86400·160·(0.6)/400e9 ≈ 2.0736e-5 USD/day per H/s.
-        assert!((per_hs - 2.0736e-5).abs() < 1e-9, "got {per_hs}");
-        // A 4 kH/s node ≈ 8.3¢/day — the right order of magnitude.
-        assert!((per_hs * 4000.0 - 0.082944).abs() < 1e-6);
+        // is USD/day per kH/s. Concrete sanity numbers: price $160, reward
+        // 0.6 XMR (6e11 atomic, 1e12 units), diff 400e9.
+        let per_kh = xmr_rate_per_kh(160.0, 6e11, 1e12, 400e9).unwrap();
+        // 86400·1000·160·(0.6)/400e9 ≈ 2.0736e-2 USD/day per kH/s.
+        assert!((per_kh - 2.0736e-2).abs() < 1e-6, "got {per_kh}");
+        // A 4 kH/s node ≈ 8.3¢/day through the shared earnings fn.
+        let day = pasiv_core::earnings::usd_per_day(4000.0, Some(per_kh)).unwrap();
+        assert!((day - 0.082944).abs() < 1e-6);
         // Non-positive inputs yield None, never a bogus number (score parity).
-        assert!(xmr_usd_per_hs(0.0, 6e11, 1e12, 400e9).is_none());
-        assert!(xmr_usd_per_hs(160.0, 6e11, 1e12, 0.0).is_none());
-        assert!(xmr_usd_per_hs(160.0, 0.0, 1e12, 400e9).is_none());
+        assert!(xmr_rate_per_kh(0.0, 6e11, 1e12, 400e9).is_none());
+        assert!(xmr_rate_per_kh(160.0, 6e11, 1e12, 0.0).is_none());
+        assert!(xmr_rate_per_kh(160.0, 0.0, 1e12, 400e9).is_none());
     }
 
     /// Process argv is world-readable (`/proc/<pid>/cmdline`), and this token
@@ -1115,7 +731,7 @@ mod tests {
     #[test]
     fn the_api_token_never_reaches_the_command_line() {
         let _g = ENV_LOCK.lock().unwrap(); // xmrig_args reads pool()
-        let args = xmrig_args("4payoutaddr", "/tmp/xmrig-runtime.json");
+        let args = xmrig::xmrig_args("4payoutaddr", "/tmp/xmrig-runtime.json");
         assert!(
             args.iter()
                 .all(|a| !a.contains("tok123") && a != "--http-access-token"),
@@ -1130,35 +746,6 @@ mod tests {
         let ui = args.iter().position(|a| a == "-u").expect("wallet flag");
         assert_eq!(args[ui + 1], "4payoutaddr");
         assert!(args.iter().any(|a| *a == pool()));
-    }
-
-    /// REGRESSION (0.1.0 → 0.1.1): without an unrestricted API, xmrig 403s the
-    /// config calls the fee scheduler makes, the "cannot return payout"
-    /// fail-safe fires, and a fresh node mines nothing. The flag moved from
-    /// argv into the runtime config — assert it THERE, plus the 0600 mode the
-    /// token's secrecy depends on.
-    #[test]
-    fn xmrig_runtime_config_is_unrestricted_owner_only_and_carries_the_token() {
-        let dir = std::env::temp_dir().join(format!("pasivd-rt-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("xmrig-runtime.json");
-        write_xmrig_runtime(&path, "tok123").unwrap();
-        let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(v["http"]["enabled"], true);
-        assert_eq!(
-            v["http"]["restricted"], false,
-            "restricted mode 403s the fee swap"
-        );
-        assert_eq!(v["http"]["access-token"], "tok123");
-        assert_eq!(v["http"]["host"], "127.0.0.1");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600, "the token file must be owner-only");
-        }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The device config holds a bearer credential; it must round-trip intact
@@ -1238,7 +825,7 @@ mod tests {
     /// only when it's real — never a fabricated number on an idle/warming node.
     #[test]
     fn snapshot_carries_the_lane_and_only_a_real_est_usd_day() {
-        let mining = build_snapshot("mining", 4000.0, Some(3e-5));
+        let mining = build_snapshot("mining", 4000.0, Some(0.03));
         assert_eq!(mining["rollup"]["state"], "mining");
         // The lane the phone joins with stats.xmrig to render "CPU XMR <rate>".
         assert_eq!(mining["miners"]["xmrig"]["state"], "mining");
@@ -1246,8 +833,8 @@ mod tests {
 
         // No est when idle, when not hashing, or when the rate is unknown —
         // omit it rather than publish a number that isn't true.
-        assert!(build_snapshot("idle", 0.0, Some(3e-5))["est_usd_day"].is_null());
-        assert!(build_snapshot("mining", 0.0, Some(3e-5))["est_usd_day"].is_null());
+        assert!(build_snapshot("idle", 0.0, Some(0.03))["est_usd_day"].is_null());
+        assert!(build_snapshot("mining", 0.0, Some(0.03))["est_usd_day"].is_null());
         assert!(build_snapshot("mining", 4000.0, None)["est_usd_day"].is_null());
 
         // The lane is present even while starting, so the card shows "warming"

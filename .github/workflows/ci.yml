@@ -36,8 +36,11 @@ jobs:
       - run: cargo llvm-cov -p pasiv-core --fail-under-lines 90
       # pasivd's uncovered mass is the async run loop and the network commands
       # (claim/doctor/run) — the pure fee/config/args logic is what the floor
-      # protects. Honest number; raise it as the loop grows seams.
-      - run: cargo llvm-cov -p pasivd --fail-under-lines 28
+      # protects. 28 → 26 on 2026-08-26 is NOT a ratchet-down of coverage: the
+      # well-tested xmrig contract (runtime config, parsers) moved into
+      # pasiv-core where it is measured under the 90 floor, shrinking this
+      # crate's covered numerator. Raise as the run loop grows seams.
+      - run: cargo llvm-cov -p pasivd --fail-under-lines 26
 
   # The Verus engine's vendored VerusHash C++ is arm64/clang-only, so the
   # macOS job is what actually compiles and tests it (the ubuntu job cfg's the

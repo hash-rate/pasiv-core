@@ -21,6 +21,8 @@
 //! - [`types`] — the shared miner/coin types.
 //! - [`verus`] (macOS) — the complete in-process Verus mining engine:
 //!   VerusHash V2.2, stratum client, worker pool, share submission.
+//! - [`xmrig`] — the XMRig local-API contract (runtime config, URLs, parsers)
+//!   both consumers drive the bundled miner through.
 //!
 //! The binding product commitments live in `docs/FEES.md` (the never-list).
 //! The `pasivd` workspace member is the complete, runnable headless daemon
@@ -36,3 +38,4 @@ pub mod state;
 pub mod types;
 #[cfg(target_os = "macos")]
 pub mod verus;
+pub mod xmrig;
