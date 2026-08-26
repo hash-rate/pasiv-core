@@ -61,3 +61,12 @@ fee address or the slice schedule requires a commit here *and* a new signed
 release there, each leaving a public diff. `pasivd` binaries attached to
 [Pasiv releases](https://github.com/hash-rate/pasiv-releases/releases) are
 built from this source.
+
+**Why not on crates.io?** Deliberate, two reasons. The Verus engine depends on
+the vendored `verushash-rs` (its C++ is patched for arm64/clang), and a path
+dependency cannot be published — we would have to publish a renamed fork of a
+third-party crate, which helps nobody. More importantly, the git-rev pin *is*
+the transparency mechanism: the apps name the exact commit they build against,
+and bumping it leaves a visible diff on both sides. A crates.io version would
+add a resolution layer without adding any verifiability. Revisit if the
+verushash patches are ever upstreamed.
