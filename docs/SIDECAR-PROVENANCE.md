@@ -11,7 +11,7 @@ release workflow before any bundling.
 
 ## Why fetched, not committed
 
-The binaries were previously committed to `src-tauri/binaries/`. Three problems:
+The binaries were previously committed to the app repository. Three problems:
 
 1. **Defender deletes them from the working tree.** SRBMiner is detected as
    `Trojan:Win32/Kepavll!rfn`. On a Windows machine with real-time protection on,
@@ -98,4 +98,4 @@ determination from Microsoft addresses the quarantine.
    not match, so a bad paste fails loudly rather than shipping.
 3. Re-verify against the author's published checksum file for the new release and
    update the tables above.
-4. Update the vendored-version note in `src-tauri/src/miners/srbminer.rs`.
+4. Update the vendored-version note in the app's SRBMiner adapter.

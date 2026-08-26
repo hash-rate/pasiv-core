@@ -11,7 +11,7 @@
 > canonicalisation → pool-nonce-in-solution-tail → submit) is solved and documented in §10.
 > This takes Pasiv past "a wrapper for a single mining binary": a second, genuinely
 > different algorithm the Mac is actually good at — **in-process Rust, no vendored miner
-> binary**. Remaining before it's user-facing: a real VRSC address from Simon for in-app credit.
+> binary**. Remaining before it's user-facing: a production VRSC credit address.
 
 ## Why Verus is the flagship
 
@@ -103,7 +103,7 @@ benchmark (next step) before comparing to hellminer.
 
 ## 10. LuckPool stratum protocol (captured live, 2026-07-24)
 
-The hash is proven + vendored (`src-tauri/vendor/verushash-rs/`, MIT, in-repo tests
+The hash is proven + vendored (`vendor/verushash-rs/`, MIT, in-repo tests
 pass). The remaining miner is Zcash-lineage stratum (Verus is a Zcash fork). Captured
 straight off `na.luckpool.net:3956` with a test worker:
 
@@ -155,7 +155,7 @@ which are the ground truth for what LuckPool validates):
 
 ### ✅ SHIPPED — in-process Earner adapter (2026-07-24)
 
-The proven layout is now a real, wired-in miner: **`src-tauri/src/miners/verus.rs`**
+The proven layout is now a real, wired-in engine: **`crates/pasiv-core/src/verus.rs`**
 (`VerusAdapter`). It implements the same `Miner` trait as XMRig, so the supervisor /
 governor / fleet drive it unchanged — the only difference is it's **in-process** (no
 vendored sidecar): a CPU worker pool calling `verus_hash_v2_2` + a small blocking
@@ -180,7 +180,7 @@ live LuckPool: ~2.5 MH/s across 4 workers, **accepted share in ~33s**, clean sto
 `cargo test -p pasiv verus_adapter_mines_a_live_share --release -- --ignored --nocapture`.
 
 **Remaining before it's a user-facing feature:**
-1. A **real VRSC address from Simon** for in-app credit (the proof used the public test
+1. A **production VRSC credit address** (the proof used the public test
    worker `RPPPm6dVbpx3L3yDRK1ktZ1VnDbBTtNMoy`).
 2. Optional polish: pipe stratum connection/log lines to the UI log (in-process miners
    have no stdout stream today), and amortise the verusclhash key per job for more H/s.

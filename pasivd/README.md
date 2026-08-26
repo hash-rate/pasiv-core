@@ -30,7 +30,7 @@ Coins → Monero, which syncs automatically).
 | `pasivd run` | the daemon: mine + publish state + obey start/stop (this is what the systemd unit runs) |
 | `pasivd doctor` | one diagnostic pass (`PASS`/`WARN`/`FAIL`), exit 1 on any failure — cron/systemd friendly |
 
-## Trust model (mirrors the desktop — see `../docs/MONETISATION.md` §5)
+## Trust model (mirrors the desktop — see [`../docs/FEES.md`](../docs/FEES.md), the binding never-list)
 
 - **Non-custodial** — mines straight to your payout address; pasivd never holds funds.
 - **Fee parity** — the same time-sliced 4% (20 s of every 500 s of mining), to the
@@ -38,7 +38,7 @@ Coins → Monero, which syncs automatically).
 - **Remote actions are start/stop only** — nothing from the phone can change the
   coin, pool, or payout.
 - **No payout uplink** — the push never carries a payout address (enforced by the
-  edge function; see `../supabase/functions/pasivd/logic.test.ts`).
+  edge function, whose pure decision logic is tested in the app repository).
 - The miner binary (XMRig) is fetched from its official release and
   **sha256-verified against a compile-time pin** before it runs.
 
