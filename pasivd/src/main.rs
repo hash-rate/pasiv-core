@@ -12,7 +12,8 @@
 //!   - non-custodial: mines straight to the owner's payout address
 //!   - fee parity: the same time-sliced 4% (20 s per 500 s of Mining), to the
 //!     same compile-time fee address, via the same xmrig config hot-reload
-//!   - remote actions are start/stop ONLY
+//!   - remote actions are start/stop only (the desktop additionally accepts
+//!     signed updates; see docs/FEES.md never-list item 8)
 //!   - the miner binary is fetched from xmrig's official release and
 //!     sha256-verified against a compile-time pin before first run
 
@@ -21,8 +22,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use pasiv_core::address::is_valid_xmr_address;
-use pasiv_core::fee::{self, in_fee_slice, FEE_ADDRESS_XMR};
-use pasiv_core::types::Coin;
+use pasiv_core::fee::{self, PayoutSide, SliceScheduler, SwapFailure, FEE_ADDRESS_XMR};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
@@ -86,12 +86,9 @@ const HTTP_PORT: u16 = 42999;
 const XMR_STATS_URL: &str = "https://monero.herominers.com/api/stats";
 
 // Fee parity with the desktop is BY CONSTRUCTION now: the address, the slice
-// schedule, and the validator all come from the shared pasiv-core crate (see
-// the `use pasiv_core::…` imports above) — the drift the old include_str!
-// parity test guarded against can no longer happen.
-/// Consecutive failures to return to the user's payout before we stop mining
-/// altogether. Fail towards "not mining", never towards "still mining to us".
-const FEE_RETURN_MAX_RETRIES: u32 = 3;
+// schedule, the validator, and — since Phase B — the entire enforcement state
+// machine (`fee::SliceScheduler`) come from the shared pasiv-core crate. The
+// desktop supervisor drives the same scheduler.
 
 const VERSION: &str = concat!("pasivd ", env!("CARGO_PKG_VERSION"));
 
@@ -594,51 +591,26 @@ fn append_fee_event(ev: &fee::FeeEvent) {
     let _ = fee::append_event(&fee_ledger_path(), ev);
 }
 
-/// Ledger the moment mining actually crosses onto (or off) the fee address.
-///
-/// Called only once xmrig has confirmed the address, so the record reflects
-/// where hashes really went rather than where we intended them to go. Same
-/// est_hashes convention as the desktop: hashrate at the close of the slice
-/// times its duration.
-fn record_slice_edge(
-    was_on_fee: bool,
-    want_fee: bool,
-    slice_started_at: &mut Option<u64>,
-    last_hashrate: f64,
-) {
-    if was_on_fee == want_fee {
-        return;
+/// The scheduler is confirmed on a side (xmrig's login was read back, so the
+/// record reflects where hashes really went); ledger the slice it closes.
+fn confirm_side(sched: &mut SliceScheduler, side: PayoutSide, last_hashrate: f64) {
+    if let Some(ev) = sched.confirmed(side, now_unix_secs(), last_hashrate) {
+        let secs = ev.ended_at.saturating_sub(ev.started_at);
+        append_fee_event(&ev);
+        println!(
+            "fee: {secs}s slice complete — logged to {}",
+            fee_ledger_path().display()
+        );
     }
-    let now = now_unix_secs();
-    if want_fee {
-        *slice_started_at = Some(now);
-        return;
-    }
-    let Some(start) = slice_started_at.take() else {
-        return;
-    };
-    let secs = now.saturating_sub(start);
-    append_fee_event(&fee::FeeEvent {
-        started_at: start,
-        ended_at: now,
-        coin: Coin::Xmr,
-        address: FEE_ADDRESS_XMR.into(),
-        est_hashes: (last_hashrate * secs as f64) as u64,
-    });
-    println!(
-        "fee: {secs}s slice complete — logged to {}",
-        fee_ledger_path().display()
-    );
 }
 
-/// Which address the miner must be logged in with right now. Pure so the fee
-/// path is testable: inside a slice it is exactly the shared crate's
-/// compile-time fee address; everywhere else, the user's payout.
-fn payout_target(want_fee: bool, payout: &str) -> &str {
-    if want_fee {
-        FEE_ADDRESS_XMR
-    } else {
-        payout
+/// Which address a payout side means. Pure so the fee path is testable: the
+/// Fee side is exactly the shared crate's compile-time fee address; the User
+/// side is the owner's payout.
+fn side_address(side: PayoutSide, payout: &str) -> &str {
+    match side {
+        PayoutSide::Fee => FEE_ADDRESS_XMR,
+        PayoutSide::User => payout,
     }
 }
 
@@ -759,10 +731,9 @@ async fn cmd_run() -> Result<(), String> {
     let mut miner: Option<Miner> = None;
     let mut want_mining = true; // a headless node's default job is to mine
     let mut mining_secs: u64 = 0;
-    let mut on_fee_address = false;
-    // Start of the current fee slice, for the ledger line written when it ends.
-    let mut slice_started_at: Option<u64> = None;
-    let mut fee_swap_failures: u32 = 0;
+    // The shared enforcement state machine — fresh per spawn (a respawned
+    // miner always comes up on the user's address).
+    let mut sched = SliceScheduler::new();
     let mut tick: u64 = 0;
     let mut last_hashrate = 0.0_f64;
     let mut accepted: u64 = 0;
@@ -808,7 +779,7 @@ async fn cmd_run() -> Result<(), String> {
                             "miner started (payout {}…)",
                             payout.chars().take(12).collect::<String>()
                         );
-                        on_fee_address = false;
+                        sched = SliceScheduler::new();
                         miner = Some(Miner { child, token });
                     }
                     Err(e) => eprintln!("{e}"),
@@ -858,46 +829,27 @@ async fn cmd_run() -> Result<(), String> {
             //     pinned the node on the FEE address indefinitely.
             //
             // Now:every tick, ask xmrig where it is actually mining and correct it.
-            let want_fee = last_hashrate > 0.0 && in_fee_slice(mining_secs);
-            let target = payout_target(want_fee, &payout);
+            let want = sched.desired(last_hashrate > 0.0, mining_secs);
+            let target = side_address(want, &payout);
             match xmrig_current_user(&client, &m.token).await {
                 Some(actual) if actual == target => {
-                    record_slice_edge(
-                        on_fee_address,
-                        want_fee,
-                        &mut slice_started_at,
-                        last_hashrate,
-                    );
-                    on_fee_address = want_fee;
-                    fee_swap_failures = 0;
+                    confirm_side(&mut sched, want, last_hashrate);
                 }
                 Some(_) | None => {
                     if xmrig_set_user(&client, &m.token, target).await {
-                        record_slice_edge(
-                            on_fee_address,
-                            want_fee,
-                            &mut slice_started_at,
-                            last_hashrate,
-                        );
-                        on_fee_address = want_fee;
-                        fee_swap_failures = 0;
-                    } else if !want_fee {
+                        confirm_side(&mut sched, want, last_hashrate);
+                    } else if let SwapFailure::StopMining { attempts } = sched.swap_failed(want) {
                         // Failing to get BACK to the user's address is the only
-                        // direction that can cost them money. Bound it: after a
-                        // few attempts, stop mining rather than keep earning for
-                        // us. A respawn always comes up on the user's address.
-                        fee_swap_failures += 1;
-                        if fee_swap_failures >= FEE_RETURN_MAX_RETRIES {
-                            eprintln!(
-                                "cannot return payout to your address after {fee_swap_failures} \
-                                 attempts — stopping so mining never continues on the fee address"
-                            );
-                            let _ = m.child.kill().await;
-                            miner = None;
-                            last_hashrate = 0.0;
-                            fee_swap_failures = 0;
-                            on_fee_address = false;
-                        }
+                        // direction that can cost them money; the shared
+                        // scheduler bounds it. A respawn always comes up on the
+                        // user's address.
+                        eprintln!(
+                            "cannot return payout to your address after {attempts} \
+                             attempts — stopping so mining never continues on the fee address"
+                        );
+                        let _ = m.child.kill().await;
+                        miner = None;
+                        last_hashrate = 0.0;
                     }
                 }
             }
@@ -985,7 +937,8 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pasiv_core::fee::{SLICE_SECS, SLICE_WINDOW_SECS};
+    use pasiv_core::fee::{in_fee_slice, SLICE_SECS, SLICE_WINDOW_SECS};
+    use pasiv_core::types::Coin;
 
     /// Env vars are process-global; every test that sets one — or reads a
     /// value derived from one, like `pool()` — takes this lock so parallel
@@ -1015,44 +968,29 @@ mod tests {
         );
     }
 
-    /// A slice is only ledgered on the falling edge, and only once. Staying on
-    /// the fee address across ticks must not write a line per tick.
+    /// The slice lifecycle itself is pinned in pasiv-core (the shared
+    /// `SliceScheduler`); what pasivd owns is the LEDGER WRITE on the falling
+    /// edge — one line per closed slice, in the shared format.
     #[test]
-    fn only_the_end_of_a_slice_writes_a_line() {
+    fn a_closed_slice_writes_exactly_one_ledger_line() {
         // Never touch the real ledger: on a machine actually running pasivd,
         // `cargo test` would otherwise append junk to its audit trail.
+        let _g = ENV_LOCK.lock().unwrap();
         let tmp = std::env::temp_dir().join("pasivd-test-fee-ledger.jsonl");
         let _ = std::fs::remove_file(&tmp);
-        // SAFETY: single-threaded within this test; no other test reads it.
+        // SAFETY: env mutation serialised by ENV_LOCK.
         unsafe { std::env::set_var("PASIVD_FEE_LEDGER", &tmp) };
 
-        let mut start: Option<u64> = None;
+        let mut sched = SliceScheduler::new();
+        confirm_side(&mut sched, PayoutSide::Fee, 100.0); // rising edge — no line
+        confirm_side(&mut sched, PayoutSide::Fee, 100.0); // hold — no line
+        confirm_side(&mut sched, PayoutSide::User, 100.0); // falling edge — one line
+        confirm_side(&mut sched, PayoutSide::User, 100.0); // hold — nothing
 
-        record_slice_edge(false, false, &mut start, 100.0);
-        assert!(start.is_none(), "no slice, nothing opened");
-
-        record_slice_edge(false, true, &mut start, 100.0);
-        let opened = start.expect("rising edge opens a slice");
-
-        record_slice_edge(true, true, &mut start, 100.0);
-        assert_eq!(start, Some(opened), "staying on fee must not reopen");
-
-        // Falling edge consumes it and writes exactly one line.
-        record_slice_edge(true, false, &mut start, 100.0);
-        assert!(start.is_none(), "falling edge closes the slice");
         let written = std::fs::read_to_string(&tmp).unwrap_or_default();
         assert_eq!(written.lines().count(), 1, "one slice, one ledger line");
         assert!(written.contains("\"coin\":\"xmr\""));
-
-        // A further no-change tick adds nothing.
-        record_slice_edge(false, false, &mut start, 100.0);
-        assert_eq!(
-            std::fs::read_to_string(&tmp)
-                .unwrap_or_default()
-                .lines()
-                .count(),
-            1,
-        );
+        unsafe { std::env::remove_var("PASIVD_FEE_LEDGER") };
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -1073,10 +1011,10 @@ mod tests {
     #[test]
     fn fee_target_is_the_shared_crate_address_inside_a_slice() {
         assert_eq!(
-            payout_target(true, "4user"),
+            side_address(PayoutSide::Fee, "4user"),
             pasiv_core::fee::FEE_ADDRESS_XMR
         );
-        assert_eq!(payout_target(false, "4user"), "4user");
+        assert_eq!(side_address(PayoutSide::User, "4user"), "4user");
         // And the fee address must itself be a valid payout, or the node can't
         // even mine its own slice.
         assert!(is_valid_xmr_address(FEE_ADDRESS_XMR));

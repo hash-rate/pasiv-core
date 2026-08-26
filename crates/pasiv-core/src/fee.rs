@@ -133,6 +133,136 @@ pub fn summary_of(events: Vec<FeeEvent>) -> FeeSummary {
     }
 }
 
+// ── The slice scheduler: the enforcement state machine ─────────────────────
+//
+// Phase B of the open-core split: this is the SAME state machine the
+// proprietary desktop supervisor and the open `pasivd` daemon both drive, so
+// "the fee is enforced by open code" holds everywhere the fee is charged.
+// It is deliberately pure — the consumers do the I/O (hot-swapping the pool
+// login, reading it back, killing the miner) and report outcomes here; this
+// type owns WHAT must happen: which side the miner belongs on, when a ledger
+// line is due, and when repeated failure to return to the user's address
+// must stop mining entirely.
+
+/// Which address the miner's pool login points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayoutSide {
+    User,
+    Fee,
+}
+
+/// Consecutive failures to swap the payout BACK to the user tolerated before
+/// mining must stop outright. Mining to the fee address is capped at 4% by
+/// the slice schedule only if the swap-back works; when it can't, failing
+/// toward "not mining" is the only direction that never costs the user.
+pub const FEE_RETURN_MAX_RETRIES: u32 = 3;
+
+/// The verdict after a failed swap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapFailure {
+    /// Transient — leave state unchanged and retry next tick.
+    Retry,
+    /// The bounded retries to RETURN to the user are exhausted: stop the
+    /// miner. A respawn always comes up on the user's address.
+    StopMining { attempts: u32 },
+}
+
+/// Pure fee-slice enforcement state. One instance per miner run; create a
+/// fresh one on every (re)spawn — a respawned miner is always on the user's
+/// address.
+#[derive(Debug, Default)]
+pub struct SliceScheduler {
+    on_fee: bool,
+    slice_started_at: Option<u64>,
+    failed_returns: u32,
+}
+
+impl SliceScheduler {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The side the miner must be pointed at right now: the fee address only
+    /// during a slice while ACTIVELY mining, the user's address every other
+    /// moment. `actively_mining` is the consumer's notion of "hashes are being
+    /// produced" (the desktop's `Mining` state; pasivd's nonzero hashrate) —
+    /// which is what makes a paused, warming, or errored miner structurally
+    /// unchargeable.
+    pub fn desired(&self, actively_mining: bool, mining_secs: u64) -> PayoutSide {
+        if actively_mining && in_fee_slice(mining_secs) {
+            PayoutSide::Fee
+        } else {
+            PayoutSide::User
+        }
+    }
+
+    /// The side this scheduler currently believes the miner is on.
+    pub fn current(&self) -> PayoutSide {
+        if self.on_fee {
+            PayoutSide::Fee
+        } else {
+            PayoutSide::User
+        }
+    }
+
+    /// The miner is CONFIRMED on `side` — a successful hot-swap, or (better,
+    /// pasivd's level-triggered model) the login actually read back from the
+    /// miner. Resets the failure counter, tracks slice edges, and returns the
+    /// completed `FeeEvent` exactly once per slice, on the falling edge — so
+    /// the ledger records where hashes really went, with the same est_hashes
+    /// convention both surfaces have always used (closing hashrate × slice
+    /// seconds).
+    pub fn confirmed(
+        &mut self,
+        side: PayoutSide,
+        now_unix: u64,
+        last_hashrate: f64,
+    ) -> Option<FeeEvent> {
+        self.failed_returns = 0;
+        let was_fee = self.on_fee;
+        self.on_fee = side == PayoutSide::Fee;
+        match (was_fee, self.on_fee) {
+            (false, true) => {
+                self.slice_started_at = Some(now_unix);
+                None
+            }
+            (true, false) => {
+                let start = self.slice_started_at.take()?;
+                let secs = now_unix.saturating_sub(start);
+                Some(FeeEvent {
+                    started_at: start,
+                    ended_at: now_unix,
+                    coin: Coin::Xmr,
+                    address: FEE_ADDRESS_XMR.to_string(),
+                    est_hashes: (last_hashrate * secs as f64) as u64,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// A swap toward `wanted` failed (or the miner's actual login could not be
+    /// corrected). Failing toward the FEE address is self-healing — the next
+    /// tick simply retries, and the user loses nothing. Failing to RETURN to
+    /// the user is the only direction that costs money, so it is bounded:
+    /// after `FEE_RETURN_MAX_RETRIES` consecutive failures the verdict is
+    /// StopMining, and the consumer must stop the miner (respawns always come
+    /// up on the user's address).
+    pub fn swap_failed(&mut self, wanted: PayoutSide) -> SwapFailure {
+        if wanted == PayoutSide::User {
+            self.failed_returns += 1;
+            if self.failed_returns >= FEE_RETURN_MAX_RETRIES {
+                let attempts = self.failed_returns;
+                self.failed_returns = 0;
+                self.on_fee = false; // the consumer stops the miner now
+                self.slice_started_at = None;
+                return SwapFailure::StopMining { attempts };
+            }
+        }
+        SwapFailure::Retry
+    }
+}
+
 /// Tolerant line parser: a corrupt line never hides the rest of the ledger.
 pub fn parse_ledger(contents: &str) -> Vec<FeeEvent> {
     contents
@@ -211,6 +341,87 @@ mod tests {
         assert_eq!(fee_fraction(Coin::Zeph), 0.0);
         assert_eq!(fee_fraction(Coin::Sal), 0.0);
         assert_eq!(fee_fraction(Coin::Vrsc), 0.0);
+    }
+
+    #[test]
+    fn scheduler_full_slice_lifecycle_writes_one_event() {
+        let mut s = SliceScheduler::new();
+        // Outside a slice, mining: stay on the user.
+        assert_eq!(s.desired(true, 250), PayoutSide::User);
+        // Slice opens (mining_secs wraps into the window): fee side desired.
+        assert_eq!(s.desired(true, 500), PayoutSide::Fee);
+        // Rising edge: no event, slice opens.
+        assert!(s.confirmed(PayoutSide::Fee, 1_000, 5_000.0).is_none());
+        assert_eq!(s.current(), PayoutSide::Fee);
+        // Holding on fee across ticks must not re-open or emit.
+        assert!(s.confirmed(PayoutSide::Fee, 1_010, 5_000.0).is_none());
+        // Falling edge: exactly one event, correct span + est_hashes.
+        let ev = s
+            .confirmed(PayoutSide::User, 1_020, 5_000.0)
+            .expect("event");
+        assert_eq!((ev.started_at, ev.ended_at), (1_000, 1_020));
+        assert_eq!(ev.est_hashes, (5_000.0 * 20.0) as u64);
+        assert_eq!(ev.coin, Coin::Xmr);
+        assert_eq!(ev.address, FEE_ADDRESS_XMR);
+        // And staying on the user emits nothing.
+        assert!(s.confirmed(PayoutSide::User, 1_030, 5_000.0).is_none());
+    }
+
+    #[test]
+    fn scheduler_never_charges_when_not_actively_mining() {
+        let s = SliceScheduler::new();
+        // Even inside the slice window, a paused/warming/idle miner belongs
+        // to the user — this is never-list "fee time only in Mining".
+        assert_eq!(s.desired(false, 0), PayoutSide::User);
+        assert_eq!(s.desired(false, 505), PayoutSide::User);
+    }
+
+    #[test]
+    fn scheduler_failing_toward_fee_is_unbounded_retry() {
+        let mut s = SliceScheduler::new();
+        // Failing to GET ONTO the fee address costs the user nothing; retry
+        // forever, never stop the miner, never count it against the return
+        // budget.
+        for _ in 0..100 {
+            assert_eq!(s.swap_failed(PayoutSide::Fee), SwapFailure::Retry);
+        }
+        assert_eq!(
+            s.swap_failed(PayoutSide::User),
+            SwapFailure::Retry,
+            "budget untouched"
+        );
+    }
+
+    #[test]
+    fn scheduler_bounded_return_failures_stop_the_miner() {
+        let mut s = SliceScheduler::new();
+        assert!(s.confirmed(PayoutSide::Fee, 1_000, 100.0).is_none());
+        // Two failures: still retrying.
+        assert_eq!(s.swap_failed(PayoutSide::User), SwapFailure::Retry);
+        assert_eq!(s.swap_failed(PayoutSide::User), SwapFailure::Retry);
+        // Third consecutive failure: stop — never keep mining to the fee.
+        assert_eq!(
+            s.swap_failed(PayoutSide::User),
+            SwapFailure::StopMining { attempts: 3 }
+        );
+        // After the stop verdict the scheduler is reset for the respawn.
+        assert_eq!(s.current(), PayoutSide::User);
+        assert_eq!(s.swap_failed(PayoutSide::User), SwapFailure::Retry);
+    }
+
+    #[test]
+    fn scheduler_success_resets_the_failure_budget() {
+        let mut s = SliceScheduler::new();
+        assert_eq!(s.swap_failed(PayoutSide::User), SwapFailure::Retry);
+        assert_eq!(s.swap_failed(PayoutSide::User), SwapFailure::Retry);
+        // One confirmed swap clears the count — only CONSECUTIVE failures stop.
+        let _ = s.confirmed(PayoutSide::User, 2_000, 0.0);
+        assert_eq!(s.swap_failed(PayoutSide::User), SwapFailure::Retry);
+        assert_eq!(s.swap_failed(PayoutSide::User), SwapFailure::Retry);
+        assert_eq!(
+            s.swap_failed(PayoutSide::User),
+            SwapFailure::StopMining { attempts: 3 }
+        );
     }
 
     #[test]
