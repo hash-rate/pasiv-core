@@ -442,8 +442,8 @@ mod tests {
     }
 
     /// THE RECONCILE DISCIPLINE, as a conformance table. Both consumers must
-    /// drive the scheduler this way (desktop: src-tauri supervisor stats_loop;
-    /// daemon: pasivd run loop):
+    /// drive the scheduler this way (desktop: the app supervisor's stats
+    /// loop; daemon: pasivd run loop):
     ///
     ///   1. read back the login the miner is ACTUALLY using
     ///   2. matches the desired side: confirmed()
