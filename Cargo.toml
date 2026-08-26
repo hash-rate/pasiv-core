@@ -1,3 +1,6 @@
 [workspace]
 resolver = "2"
 members = ["crates/pasiv-core", "pasivd"]
+# Vendored third-party code (MIT) is a path dependency, not a workspace member:
+# workspace-wide fmt/clippy/test must not rewrite or lint upstream sources.
+exclude = ["vendor/verushash-rs"]
