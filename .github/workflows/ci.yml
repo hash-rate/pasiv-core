@@ -64,3 +64,21 @@ jobs:
           path: |
             pasivd-linux-x64
             pasivd-linux-x64.sha256
+
+  # The site serves pasiv.network/pasivd.sh; this repo owns pasivd/install.sh.
+  # They must be byte-identical — they drifted once in the private era (the
+  # site copy kept pointing at a moved repo namespace and only worked through
+  # a transfer redirect). Both are public now, so the check needs no token.
+  installer-mirror:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh must match what the site serves
+        run: |
+          if curl -fsS --max-time 30 -o site-pasivd.sh https://pasiv.network/pasivd.sh; then
+            diff -u pasivd/install.sh site-pasivd.sh \
+              || { echo "::error::pasivd/install.sh and pasiv.network/pasivd.sh have drifted"; exit 1; }
+            echo "installer mirror OK"
+          else
+            echo "site unreachable — skipping mirror check"
+          fi
