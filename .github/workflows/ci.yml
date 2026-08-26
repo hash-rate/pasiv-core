@@ -23,11 +23,11 @@ jobs:
   core:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch, SHA-pinned
         with:
           components: clippy, rustfmt, llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo install cargo-llvm-cov --version 0.9.0 --locked
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -48,11 +48,11 @@ jobs:
   macos:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch, SHA-pinned
         with:
           components: clippy, llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo install cargo-llvm-cov --version 0.9.0 --locked
       - run: cargo clippy -p pasiv-core --all-targets -- -D warnings
       # This is the only job where the Verus engine compiles, so it is the only
@@ -67,11 +67,11 @@ jobs:
     # no publishing here — artifact only.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable branch, SHA-pinned
         with:
           targets: x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release -p pasivd --target x86_64-unknown-linux-musl
       - name: Assert static + checksum
@@ -80,12 +80,38 @@ jobs:
           file "$BIN" | grep -q "static" || { echo "pasivd is not statically linked"; exit 1; }
           cp "$BIN" pasivd-linux-x64
           sha256sum pasivd-linux-x64 | tee pasivd-linux-x64.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pasivd-linux-x64
           path: |
             pasivd-linux-x64
             pasivd-linux-x64.sha256
+
+  # Secret/PII gate over the FULL history: default gitleaks rules plus a
+  # private ruleset delivered via the GITLEAKS_CONFIG_B64 secret. The ruleset
+  # names the exact strings it hunts, so it can never be a checked-in file
+  # here; rule ids are neutral (px-NN) and findings print --redact'ed, so a
+  # hit in this public log discloses nothing. Gated off pull_request: fork
+  # PRs have no secrets and would fail spuriously — their content is scanned
+  # by the push run when it lands on a branch here.
+  hygiene:
+    if: github.repository == 'hash-rate/pasiv-core' && github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: gitleaks (full history, private ruleset)
+        env:
+          GITLEAKS_CONFIG_B64: ${{ secrets.GITLEAKS_CONFIG_B64 }}
+        run: |
+          [ -n "$GITLEAKS_CONFIG_B64" ] || { echo "::error::GITLEAKS_CONFIG_B64 secret missing"; exit 1; }
+          printf '%s' "$GITLEAKS_CONFIG_B64" | base64 -d > "$RUNNER_TEMP/rules.toml"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/gitleaks.tgz" \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --config "$RUNNER_TEMP/rules.toml" .
 
   # The site serves pasiv.network/pasivd.sh; this repo owns pasivd/install.sh.
   # They must be byte-identical — they drifted once in the private era (the
@@ -94,7 +120,7 @@ jobs:
   installer-mirror:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: install.sh must match what the site serves
         run: |
           # FAIL CLOSED: a drift check that green-lights on network failure

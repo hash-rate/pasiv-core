@@ -85,8 +85,8 @@ pub(crate) const XMRIG_BIN_SHA256: &str =
 pub(crate) const XMRIG_DIR_IN_TAR: &str = "xmrig-6.26.0";
 pub(crate) const HTTP_PORT: u16 = 42999;
 
-/// Live XMR network stats, same source the desktop's profit ranking uses
-/// (src-tauri/src/coins: monero's `stats_url`). Public, key-free.
+/// Live XMR network stats, the same source the desktop's profit ranking
+/// uses for Monero. Public, key-free.
 const XMR_STATS_URL: &str = "https://monero.herominers.com/api/stats";
 
 // Fee parity with the desktop is BY CONSTRUCTION now: the address, the slice

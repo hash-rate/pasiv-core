@@ -53,27 +53,43 @@ echo "  ✓ $GOT"
 
 # The checksum above shares an origin with the binary, so alone it only proves
 # transit integrity. The SIGNATURE does not: it is made offline with the same
-# key the desktop updater trusts, and the public key is pinned in this script.
-# Verified whenever minisign is installed — install it first for the strongest
-# path (apt/dnf/apk: minisign).
-if command -v minisign >/dev/null 2>&1; then
-  echo "→ verifying signature"
-  SIG_TMP="$(mktemp)"
-  if ! curl -fsSL "$SIG_URL" -o "$SIG_TMP"; then
-    rm -f "$TMP" "$SIG_TMP"
-    echo "signature not published for this release — refusing to install." >&2
-    exit 1
+# key the desktop updater trusts, and the public key is pinned in this script —
+# served from pasiv.network, an origin independent of the release host.
+# Verification is MANDATORY: a fallback would hand anyone who could replace the
+# release assets a root install, since they could replace the checksum too.
+# If minisign is missing we install it from the distro's own signed repos
+# (this script already runs installs as root); if that fails, we refuse.
+if ! command -v minisign >/dev/null 2>&1; then
+  echo "→ installing minisign (required to verify the download)"
+  if command -v apt-get >/dev/null 2>&1; then
+    $SUDO apt-get update -qq >/dev/null 2>&1 || true
+    $SUDO apt-get install -y -qq minisign >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then
+    $SUDO dnf install -y -q minisign >/dev/null 2>&1 || true
+  elif command -v apk >/dev/null 2>&1; then
+    $SUDO apk add --no-progress minisign >/dev/null 2>&1 || true
   fi
-  if ! minisign -Vm "$TMP" -x "$SIG_TMP" -P "$MINISIGN_PUB" >/dev/null; then
-    rm -f "$TMP" "$SIG_TMP"
-    echo "SIGNATURE VERIFICATION FAILED — refusing to install." >&2
-    exit 1
-  fi
-  rm -f "$SIG_TMP"
-  echo "  ✓ minisign signature valid"
-else
-  echo "  note: minisign not installed — proceeding on checksum only." >&2
 fi
+if ! command -v minisign >/dev/null 2>&1; then
+  rm -f "$TMP"
+  echo "minisign is required to verify this download and could not be installed —" >&2
+  echo "refusing to install. Install it yourself (apt/dnf/apk: minisign) and re-run." >&2
+  exit 1
+fi
+echo "→ verifying signature"
+SIG_TMP="$(mktemp)"
+if ! curl -fsSL "$SIG_URL" -o "$SIG_TMP"; then
+  rm -f "$TMP" "$SIG_TMP"
+  echo "signature not published for this release — refusing to install." >&2
+  exit 1
+fi
+if ! minisign -Vm "$TMP" -x "$SIG_TMP" -P "$MINISIGN_PUB" >/dev/null; then
+  rm -f "$TMP" "$SIG_TMP"
+  echo "SIGNATURE VERIFICATION FAILED — refusing to install." >&2
+  exit 1
+fi
+rm -f "$SIG_TMP"
+echo "  ✓ minisign signature valid"
 
 chmod 755 "$TMP"
 $SUDO mv "$TMP" "$BIN_PATH"

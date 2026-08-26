@@ -10,8 +10,8 @@ use sha2::Digest;
 /// exit 1 iff any FAIL — systemd/cron friendly. Self-contained on purpose:
 /// pasivd shares no code with the desktop (the tolerated-drift pattern this
 /// file already uses for the fee engine), so these checks mirror the desktop
-/// doctor's SHAPE, not its source. Adopted from the 2026-08-17 Darkbloom
-/// provider audit (pasiv docs/DEPIN-SPIKE.md §10.4).
+/// doctor's SHAPE, not its source. Adopted from an internal provider-audit
+/// checklist (2026-08-17).
 pub async fn cmd_doctor() -> Result<(), String> {
     let mut failed = false;
     let mut report = |status: &str, id: &str, detail: String| {

@@ -5,9 +5,9 @@ the record of where they come from and how that claim is enforced, so "is this
 really upstream?" has an answer that is checked by the build rather than asserted
 in a comment.
 
-Pinned values live in [`tool/sidecars.json`](../tool/sidecars.json); the check
-runs in [`tool/fetch_sidecars.mjs`](../tool/fetch_sidecars.mjs) and in the
-release workflow before any bundling.
+The pinned checksums live beside the fetch-and-verify tool in the app's release
+tooling; the check runs at build time and in the release workflow before any
+bundling.
 
 ## Why fetched, not committed
 
