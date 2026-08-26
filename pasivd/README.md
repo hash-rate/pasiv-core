@@ -11,7 +11,7 @@ A daemon can't do a wallet signature (no browser), so it pairs like a TV app.
 ## Install
 
 ```bash
-curl -fsSL https://pasiv.network/pasivd.sh | sh     # sha256-verified static binary + systemd unit
+curl -fsSL https://pasiv.network/pasivd.sh | sh     # minisign-signed static binary + systemd unit
 sudo pasivd claim                                   # prints a 6-char code
 #   → enter the code in the Pasiv companion app: +  → Add node
 sudo systemctl enable --now pasivd                  # starts mining once a payout exists on your account
@@ -58,5 +58,5 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 CI builds the musl binary and attaches it to every desktop release as
-`pasivd-linux-x64` (+ `.sha256`); `pasivd.sh` resolves the latest one. Testing
+`pasivd-linux-x64` (+ `.sha256` + `.minisig` — signed with the same minisign key as every desktop update; the installer pins the public key and verifies when `minisign` is installed); `pasivd.sh` resolves the latest one. Testing
 notes and the coverage floor are in [`../docs/TESTING.md`](../docs/TESTING.md).

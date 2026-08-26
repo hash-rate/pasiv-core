@@ -467,16 +467,52 @@ struct Miner {
     token: String,
 }
 
+/// Write the `http` block xmrig should serve, readable only by this user —
+/// 0600, unlinked first so a looser pre-existing file can't be inherited.
+/// The token gates an UNRESTRICTED local API (it can rewrite the payout
+/// address), and process argv is world-readable on Linux
+/// (`/proc/<pid>/cmdline`) — so the token must never travel there. This
+/// mirrors the desktop adapter's runtime config exactly; SECURITY.md §"local
+/// miner API" is the rationale, and it applies to the daemon no less than the
+/// app. `restricted: false` is load-bearing: restricted mode 403s /1/config
+/// and /2/config even to an authenticated caller, so the fee scheduler could
+/// not swap the pool login back, tripped its own fail-safe, and stopped
+/// mining (the 0.1.0 → 0.1.1 bug — the flag just lives in the config now).
+fn write_xmrig_runtime(path: &std::path::Path, token: &str) -> Result<(), String> {
+    let body = serde_json::json!({
+        "http": {
+            "enabled": true,
+            "host": "127.0.0.1",
+            "port": HTTP_PORT,
+            "access-token": token,
+            "restricted": false,
+        }
+    });
+    let _ = std::fs::remove_file(path);
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
+        f.write_all(body.to_string().as_bytes())
+            .map_err(|e| e.to_string())?;
+        #[allow(clippy::needless_return)]
+        return Ok(());
+    }
+    #[cfg(not(unix))]
+    std::fs::write(path, body.to_string()).map_err(|e| e.to_string())
+}
+
 /// The exact xmrig command line for a headless node. Pure and unit-tested on
-/// purpose: a missing flag here fails silently at runtime, not at build. In
-/// particular `--http-no-restricted` is load-bearing — without it xmrig's HTTP
-/// API stays restricted and returns 403 on /1/config and /2/config even to an
-/// authenticated caller, so the fee scheduler cannot swap the pool login back
-/// from the fee address to the payout, trips its own "cannot return payout"
-/// fail-safe, and stops mining (the 0.1.0 → 0.1.1 bug). The token already gates
-/// the API to this loopback caller; restricted mode on top of it just breaks
-/// the mechanism the desktop achieves via restricted:false in its runtime config.
-fn xmrig_args(payout: &str, token: &str) -> Vec<String> {
+/// purpose: a missing flag here fails silently at runtime, not at build. Only
+/// the pool, the payout, and the runtime-config path travel in argv — the
+/// whole `http` block (with its token) is in the 0600 file behind `-c`.
+fn xmrig_args(payout: &str, runtime_config: &str) -> Vec<String> {
     vec![
         "-o".into(),
         pool(),
@@ -488,19 +524,16 @@ fn xmrig_args(payout: &str, token: &str) -> Vec<String> {
         "--donate-level".into(),
         "1".into(),
         "--no-color".into(),
-        "--http-host".into(),
-        "127.0.0.1".into(),
-        "--http-port".into(),
-        HTTP_PORT.to_string(),
-        "--http-access-token".into(),
-        token.into(),
-        "--http-no-restricted".into(),
+        "-c".into(),
+        runtime_config.into(),
     ]
 }
 
 fn spawn_xmrig(bin: &PathBuf, payout: &str, token: &str) -> Result<tokio::process::Child, String> {
+    let runtime = data_dir().join("xmrig-runtime.json");
+    write_xmrig_runtime(&runtime, token)?;
     tokio::process::Command::new(bin)
-        .args(xmrig_args(payout, token))
+        .args(xmrig_args(payout, &runtime.to_string_lossy()))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -1073,32 +1106,59 @@ mod tests {
         assert!(xmr_usd_per_hs(160.0, 0.0, 1e12, 400e9).is_none());
     }
 
-    /// REGRESSION (0.1.0 → 0.1.1): pasivd launched xmrig without
-    /// `--http-no-restricted`, so xmrig 403'd the config calls the fee
-    /// scheduler makes, the "cannot return payout" fail-safe fired, and a
-    /// freshly-installed node mined nothing. This asserts the flag — and the
-    /// other load-bearing args — are actually on the command line.
+    /// Process argv is world-readable (`/proc/<pid>/cmdline`), and this token
+    /// unlocks an UNRESTRICTED xmrig API that can rewrite the payout address —
+    /// so it must NEVER appear on the command line. The desktop adapter pins
+    /// the same invariant under the same name. (It used to be on argv here,
+    /// with a test asserting it was — a guard holding a vulnerability in
+    /// place.)
     #[test]
-    fn xmrig_args_enable_the_unrestricted_api_the_fee_swap_needs() {
+    fn the_api_token_never_reaches_the_command_line() {
         let _g = ENV_LOCK.lock().unwrap(); // xmrig_args reads pool()
-        let args = xmrig_args("4payoutaddr", "tok123");
+        let args = xmrig_args("4payoutaddr", "/tmp/xmrig-runtime.json");
         assert!(
-            args.iter().any(|a| a == "--http-no-restricted"),
-            "xmrig must run with the config API unrestricted or the fee-swap 403s"
+            args.iter()
+                .all(|a| !a.contains("tok123") && a != "--http-access-token"),
+            "the API token must travel in the 0600 runtime config, never argv"
         );
-        // The token gates that API to our loopback caller — both must be present.
-        let ti = args
+        let ci = args
             .iter()
-            .position(|a| a == "--http-access-token")
-            .expect("token flag present");
-        assert_eq!(args[ti + 1], "tok123");
-        assert!(args.iter().any(|a| a == "--http-host"));
-        assert!(args.iter().any(|a| a == "127.0.0.1")); // loopback, not exposed
-                                                        // Mines to the user's payout, on the pinned pool, with the pinned port.
+            .position(|a| a == "-c")
+            .expect("-c flag present");
+        assert_eq!(args[ci + 1], "/tmp/xmrig-runtime.json");
+        // Mines to the user's payout, on the pinned pool.
         let ui = args.iter().position(|a| a == "-u").expect("wallet flag");
         assert_eq!(args[ui + 1], "4payoutaddr");
         assert!(args.iter().any(|a| *a == pool()));
-        assert!(args.iter().any(|a| a == &HTTP_PORT.to_string()));
+    }
+
+    /// REGRESSION (0.1.0 → 0.1.1): without an unrestricted API, xmrig 403s the
+    /// config calls the fee scheduler makes, the "cannot return payout"
+    /// fail-safe fires, and a fresh node mines nothing. The flag moved from
+    /// argv into the runtime config — assert it THERE, plus the 0600 mode the
+    /// token's secrecy depends on.
+    #[test]
+    fn xmrig_runtime_config_is_unrestricted_owner_only_and_carries_the_token() {
+        let dir = std::env::temp_dir().join(format!("pasivd-rt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("xmrig-runtime.json");
+        write_xmrig_runtime(&path, "tok123").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["http"]["enabled"], true);
+        assert_eq!(
+            v["http"]["restricted"], false,
+            "restricted mode 403s the fee swap"
+        );
+        assert_eq!(v["http"]["access-token"], "tok123");
+        assert_eq!(v["http"]["host"], "127.0.0.1");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "the token file must be owner-only");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The device config holds a bearer credential; it must round-trip intact

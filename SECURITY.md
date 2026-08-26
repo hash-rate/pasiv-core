@@ -27,10 +27,12 @@ the app.
 ## What we guarantee
 
 - Updater packages are signed (minisign) and verified before install.
+- The `pasivd-linux-x64` release binary carries a `.minisig` made with the same
+  key; the `curl | sh` installer pins the public key and verifies the signature
+  whenever `minisign` is installed (sha256 remains the transit check).
 - macOS builds are Developer ID–signed and Apple-notarized.
 - The fee address is a compile-time constant; changing it requires a signed release and
-  a changelog entry (see [`docs/MONETISATION.md`](docs/MONETISATION.md) §5, the binding
-  never-list).
+  a changelog entry (see [`docs/FEES.md`](docs/FEES.md), the binding never-list).
 
 ## Design notes
 

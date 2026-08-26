@@ -440,4 +440,140 @@ mod tests {
         assert_eq!(s.recent.len(), 20, "recent is capped at 20");
         assert_eq!(s.recent[0].started_at, 24 * 500, "newest first");
     }
+
+    /// THE RECONCILE DISCIPLINE, as a conformance table. Both consumers must
+    /// drive the scheduler this way (desktop: src-tauri supervisor stats_loop;
+    /// daemon: pasivd run loop):
+    ///
+    ///   1. read back the login the miner is ACTUALLY using
+    ///   2. matches the desired side: confirmed()
+    ///   3. differs (or unreadable): set — Ok means confirmed(), Err means
+    ///      swap_failed()
+    ///
+    /// This test drives that exact shape against a scripted miner and pins the
+    /// outcomes the money depends on. If the discipline itself ever changes,
+    /// change it HERE first — then in both consumers.
+    #[test]
+    fn reconcile_discipline_conformance() {
+        const USER: &str = "4user";
+        struct ScriptedMiner {
+            login: String,
+            set_ok: bool,
+            applies: bool, // false = the lying PUT (Ok without effect)
+            sets: u32,
+        }
+        impl ScriptedMiner {
+            fn read(&self) -> Option<&str> {
+                Some(self.login.as_str())
+            }
+            fn set(&mut self, target: &str) -> bool {
+                self.sets += 1;
+                if self.set_ok && self.applies {
+                    self.login = target.to_string();
+                }
+                self.set_ok
+            }
+        }
+        // One tick of the canonical discipline. Returns the ledger event, if
+        // the tick closed a slice, and whether the failsafe fired.
+        fn tick(
+            sched: &mut SliceScheduler,
+            miner: &mut ScriptedMiner,
+            actively_mining: bool,
+            mining_secs: u64,
+            now: u64,
+            hashrate: f64,
+        ) -> (Option<FeeEvent>, bool) {
+            let want = sched.desired(actively_mining, mining_secs);
+            let target = match want {
+                PayoutSide::Fee => FEE_ADDRESS_XMR,
+                PayoutSide::User => USER,
+            };
+            match miner.read() {
+                Some(actual) if actual == target => (sched.confirmed(want, now, hashrate), false),
+                _ => {
+                    if miner.set(target) {
+                        (sched.confirmed(want, now, hashrate), false)
+                    } else {
+                        (
+                            None,
+                            matches!(sched.swap_failed(want), SwapFailure::StopMining { .. }),
+                        )
+                    }
+                }
+            }
+        }
+
+        // A full honest slice: swap in, mine the slice, swap out, ONE event.
+        let mut sched = SliceScheduler::new();
+        let mut m = ScriptedMiner {
+            login: USER.into(),
+            set_ok: true,
+            applies: true,
+            sets: 0,
+        };
+        let (ev, stopped) = tick(&mut sched, &mut m, true, 0, 1_000, 500.0);
+        assert!(ev.is_none() && !stopped);
+        assert_eq!(m.login, FEE_ADDRESS_XMR, "slice opens on the fee address");
+        let (ev, stopped) = tick(&mut sched, &mut m, true, 10, 1_010, 500.0);
+        assert!(ev.is_none() && !stopped);
+        let (ev, stopped) = tick(&mut sched, &mut m, true, 25, 1_020, 500.0);
+        assert!(!stopped);
+        let ev = ev.expect("leaving the slice closes exactly one event");
+        assert_eq!((ev.started_at, ev.ended_at), (1_000, 1_020));
+        assert_eq!(ev.est_hashes, 10_000);
+        assert_eq!(m.login, USER, "and the login is the user's again");
+        assert_eq!(m.sets, 2, "on-target ticks issue no swaps");
+
+        // The lying PUT: Ok without effect. The discipline keeps retrying —
+        // the read-back never matches, so the set is re-issued every tick.
+        let mut sched = SliceScheduler::new();
+        let mut m = ScriptedMiner {
+            login: USER.into(),
+            set_ok: true,
+            applies: false,
+            sets: 0,
+        };
+        for i in 0..3 {
+            let _ = tick(&mut sched, &mut m, true, 0, 2_000 + i, 500.0);
+        }
+        assert_eq!(m.sets, 3, "a lying PUT is retried, never believed");
+        assert_eq!(m.login, USER);
+
+        // Failing TOWARD the fee is unbounded retry — the user loses nothing.
+        let mut sched = SliceScheduler::new();
+        let mut m = ScriptedMiner {
+            login: USER.into(),
+            set_ok: false,
+            applies: false,
+            sets: 0,
+        };
+        for i in 0..10 {
+            let (_, stopped) = tick(&mut sched, &mut m, true, 0, 3_000 + i, 500.0);
+            assert!(!stopped, "failing toward the FEE side must never stop");
+        }
+
+        // Failing to RETURN is bounded: the failsafe fires, mining stops.
+        let mut sched = SliceScheduler::new();
+        let mut m = ScriptedMiner {
+            login: FEE_ADDRESS_XMR.into(),
+            set_ok: false,
+            applies: false,
+            sets: 0,
+        };
+        let mut fired = 0;
+        for i in 0..FEE_RETURN_MAX_RETRIES {
+            let (_, stopped) = tick(&mut sched, &mut m, true, 100, 4_000 + u64::from(i), 500.0);
+            if stopped {
+                fired += 1;
+            }
+        }
+        assert_eq!(fired, 1, "the failsafe fires exactly once at the bound");
+
+        // Not actively mining NEVER desires the fee side, whatever the clock.
+        let sched = SliceScheduler::new();
+        for secs in [0, 5, 19, 250, 500, 505] {
+            assert_eq!(sched.desired(false, secs), PayoutSide::User);
+        }
+    }
 }
