@@ -39,6 +39,20 @@ jobs:
       # protects. Honest number; raise it as the loop grows seams.
       - run: cargo llvm-cov -p pasivd --fail-under-lines 28
 
+  # The Verus engine's vendored VerusHash C++ is arm64/clang-only, so the
+  # macOS job is what actually compiles and tests it (the ubuntu job cfg's the
+  # module out). Public repos get macOS runners on free minutes.
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p pasiv-core --all-targets -- -D warnings
+      - run: cargo test -p pasiv-core
+
   musl:
     # The exact build the release pipeline attaches to Pasiv releases:
     # static x86-64 musl, staticness asserted, sha256 alongside. No signing,
