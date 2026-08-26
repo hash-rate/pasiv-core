@@ -1,0 +1,27 @@
+# M0-Z · ZANO (ProgPowZ) vs PRL (pearlhash) per card, three power prices.
+# Reproducible from these inputs alone:
+#   ZANO: price $8.9329, network 551.9604 GH/s, PoW emission 720 ZANO/day
+#         -> $0.011652 per MH/s/day   (PoW gets ~50% of blocks, NOT 1440x1 ZANO)
+#   PRL : price $0.30, network 33.3064 EH/s, 2425.84 PRL per block @ 197.14s
+#         -> $9.5763e-15 per H/s/day
+# CORRECTED 2026-08-15: the PRL block reward was recorded as 245.608518484, a
+# ~10x understatement (a coinUnits slip: the chain pays 242583793536 atomic at
+# 1e8 units = 2425.84 PRL). The arithmetic below was always self-consistent —
+# only this input was wrong. Sources: 2026-07-29 measurement recorded ~2471
+# PRL/block (profit/mod.rs:462), and the live LuckyPool /api/stats on 2026-08-15
+# returns reward 242583793536 / coinUnits 1e8 = 2425.84 PRL. A reward of
+# 2471 -> 245.6 -> 2425.8 is not a real emission change.
+# The prl_ columns are recomputed from the corrected rate. THIS REVERSES THE
+# HEADLINE: Pearl does not lose money on a 4060 at $0.10/kWh, and it out-earns
+# ZANO per card rather than trailing it. Anything that cited this file to rank
+# ZANO above PRL, or to call GPU mining unprofitable, needs re-reading.
+# progpowz_mhs_est = ESTIMATE, the weakest figure here — re-measure before trusting.
+# prl_gross is MEASURED on our own rig (3x RTX 4060, simon-MS-7D90, 167.2 TH/s total);
+# other cards are marked not_measured rather than guessed.
+# net@X = gross - (watts/1000 * 24 * X USD/kWh). Negative = loses money.
+card,vendor,progpowz_mhs_est,watts,zano_gross_usd_day,prl_gross_usd_day,net@0.05,net@0.10,net@0.15,prl_net@0.10
+RTX 4060,NVIDIA,17,115,0.1981,0.5336,0.0601,-0.0779,-0.2159,0.2576
+RTX 3070,NVIDIA,24,130,0.2797,not_measured,0.1237,-0.0323,-0.1883,not_measured
+RTX 4070 SUPER,NVIDIA,30,200,0.3496,not_measured,0.1096,-0.1304,-0.3704,not_measured
+AMD RX 6700 XT,AMD,24,175,0.2797,not_measured,0.0697,-0.1403,-0.3503,not_measured
+AMD RX 7600,AMD,16,165,0.1864,not_measured,-0.0116,-0.2096,-0.4076,not_measured

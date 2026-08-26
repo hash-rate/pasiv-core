@@ -1,0 +1,24 @@
+[package]
+name = "pasivd"
+version = "0.1.2"
+edition = "2021"
+description = "Headless Pasiv node: CPU-mines XMR to your payout, pairs with your account via a claim code, controllable from the Pasiv companion app."
+license = "GPL-3.0-only"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+flate2 = "1"
+tar = "0.4"
+
+[profile.release]
+lto = true
+strip = true
+
+[dependencies.pasiv-core]
+path = "../crates/pasiv-core"

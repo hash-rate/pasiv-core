@@ -1,0 +1,66 @@
+# Public CI — build, lint, test, and produce an unsigned static pasivd.
+# Deliberately secret-free: signing and publishing stay in the private release
+# pipeline, so nothing in this repository's CI can touch a key.
+#
+# Triggers on every branch (not just main) — hard-won rationale inherited from
+# the private repo: releases have been tagged off feature branches, and a
+# main-only gate never ran for anything that shipped.
+name: ci
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-llvm-cov --locked
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # pasiv-core is the pure money-path code; it measures ~95% and the floor
+      # only ratchets up.
+      - run: cargo llvm-cov -p pasiv-core --fail-under-lines 90
+      # pasivd's uncovered mass is the async run loop and the network commands
+      # (claim/doctor/run) — the pure fee/config/args logic is what the floor
+      # protects. Honest number; raise it as the loop grows seams.
+      - run: cargo llvm-cov -p pasivd --fail-under-lines 28
+
+  musl:
+    # The exact build the release pipeline attaches to Pasiv releases:
+    # static x86-64 musl, staticness asserted, sha256 alongside. No signing,
+    # no publishing here — artifact only.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release -p pasivd --target x86_64-unknown-linux-musl
+      - name: Assert static + checksum
+        run: |
+          BIN=target/x86_64-unknown-linux-musl/release/pasivd
+          file "$BIN" | grep -q "static" || { echo "pasivd is not statically linked"; exit 1; }
+          cp "$BIN" pasivd-linux-x64
+          sha256sum pasivd-linux-x64 | tee pasivd-linux-x64.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pasivd-linux-x64
+          path: |
+            pasivd-linux-x64
+            pasivd-linux-x64.sha256

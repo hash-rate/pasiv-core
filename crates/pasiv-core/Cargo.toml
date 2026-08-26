@@ -1,0 +1,15 @@
+[package]
+name = "pasiv-core"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "The open core of Pasiv — the code that touches money: the fee engine, coin/pool roster, payout validators, mining state machine, and earnings math."
+repository = "https://github.com/hash-rate/pasiv-core"
+
+[lib]
+name = "pasiv_core"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
