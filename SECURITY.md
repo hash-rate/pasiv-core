@@ -6,7 +6,13 @@ app and its update channel seriously.
 
 ## Reporting a vulnerability
 
-Email **support@pasiv.network** with `[SECURITY]` in the subject. Please include:
+**Preferred: [open a private security advisory](https://github.com/hash-rate/pasiv-core/security/advisories/new)**
+on this repository (Security → Report a vulnerability). It is private to you and the
+maintainers, keeps the discussion and the fix in one place, and credits you on the
+advisory when it is published.
+
+If you would rather not use GitHub, email **support@pasiv.network** with `[SECURITY]`
+in the subject. Either way, please include:
 
 - what you found and where (app, updater, website, or release pipeline),
 - steps to reproduce or a proof of concept,
@@ -28,8 +34,11 @@ the app.
 
 - Updater packages are signed (minisign) and verified before install.
 - The `pasivd-linux-x64` release binary carries a `.minisig` made with the same
-  key; the `curl | sh` installer pins the public key and verifies the signature
-  whenever `minisign` is installed (sha256 remains the transit check).
+  key. The `curl | sh` installer pins that public key and **always** verifies the
+  signature: if `minisign` is missing it installs it from the distribution's own
+  repositories, and if it cannot, it refuses to install rather than fall back to a
+  weaker check. (The sha256 is still checked, but it is only a transit check — it
+  shares an origin with the binary, so it cannot stand in for the signature.)
 - macOS builds are Developer ID–signed and Apple-notarized.
 - The fee address is a compile-time constant; changing it requires a signed release and
   a changelog entry (see [`docs/FEES.md`](docs/FEES.md), the binding never-list).
