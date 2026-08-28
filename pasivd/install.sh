@@ -57,8 +57,23 @@ echo "  ✓ $GOT"
 # served from pasiv.network, an origin independent of the release host.
 # Verification is MANDATORY: a fallback would hand anyone who could replace the
 # release assets a root install, since they could replace the checksum too.
-# If minisign is missing we install it from the distro's own signed repos
-# (this script already runs installs as root); if that fails, we refuse.
+# If minisign is missing we install it: first from the distro's own signed
+# repos, and failing that from its author's release, checked against a hash
+# pinned HERE. Both matter — minisign is simply absent from some current
+# distributions (Ubuntu 22.04 LTS, supported to 2027, has no such package), and
+# without the fallback this script would refuse to install on them at all.
+# Pinning the hash in a script served from pasiv.network keeps the trust
+# argument intact: the thing that verifies the download is itself verified
+# against an origin independent of the release host.
+MINISIGN_TGZ="https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz"
+MINISIGN_TGZ_SHA256="9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73"
+MS=""   # set when we fall back to our own copy rather than a packaged one
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+
 if ! command -v minisign >/dev/null 2>&1; then
   echo "→ installing minisign (required to verify the download)"
   if command -v apt-get >/dev/null 2>&1; then
@@ -70,7 +85,23 @@ if ! command -v minisign >/dev/null 2>&1; then
     $SUDO apk add --no-progress minisign >/dev/null 2>&1 || true
   fi
 fi
+
 if ! command -v minisign >/dev/null 2>&1; then
+  echo "  not packaged for this distribution — fetching the pinned build"
+  MS_DIR="$(mktemp -d)"
+  if curl -fsSL "$MINISIGN_TGZ" -o "$MS_DIR/ms.tgz" \
+     && [ "$(sha256_of "$MS_DIR/ms.tgz")" = "$MINISIGN_TGZ_SHA256" ] \
+     && tar xzf "$MS_DIR/ms.tgz" -C "$MS_DIR" 2>/dev/null \
+     && [ -x "$MS_DIR/minisign-linux/x86_64/minisign" ]; then
+    MS="$MS_DIR/minisign-linux/x86_64/minisign"
+  else
+    rm -rf "$MS_DIR"
+  fi
+fi
+
+# One handle for whichever we ended up with.
+[ -n "$MS" ] || MS="$(command -v minisign 2>/dev/null || true)"
+if [ -z "$MS" ]; then
   rm -f "$TMP"
   echo "minisign is required to verify this download and could not be installed —" >&2
   echo "refusing to install. Install it yourself (apt/dnf/apk: minisign) and re-run." >&2
@@ -83,7 +114,7 @@ if ! curl -fsSL "$SIG_URL" -o "$SIG_TMP"; then
   echo "signature not published for this release — refusing to install." >&2
   exit 1
 fi
-if ! minisign -Vm "$TMP" -x "$SIG_TMP" -P "$MINISIGN_PUB" >/dev/null; then
+if ! "$MS" -Vm "$TMP" -x "$SIG_TMP" -P "$MINISIGN_PUB" >/dev/null; then
   rm -f "$TMP" "$SIG_TMP"
   echo "SIGNATURE VERIFICATION FAILED — refusing to install." >&2
   exit 1
