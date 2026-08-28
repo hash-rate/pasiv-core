@@ -267,11 +267,15 @@ pub const ROSTER: &[CoinSpec] = &[
         // Different PoW (pearlhash on GPU) — can't be RandomX-ranked; auto_rankable
         // also requires MinerId::Xmrig, so PRL is a manual pick like VRSC.
         stats_url: "",
-        // Official Pearl Research Labs wallet ONLY (safety — see the field doc).
-        // Verified: this repo is the genuine Pearl network monorepo and its
-        // release ships signed macOS/Windows/Linux builds; `prl1…` matches the
-        // validator above. Never a search-ranked "pearl wallet" domain.
-        wallet_url: "https://github.com/pearl-research-labs/pearl/releases",
+        // Points at our own guide, which then links the Official Pearl Research
+        // Labs release and ONLY that (safety — see the field doc). Verified: that
+        // repo is the genuine Pearl network monorepo and its release ships signed
+        // macOS/Windows/Linux builds; `prl1…` matches the validator above. Never a
+        // search-ranked "pearl wallet" domain. Routing through the guide is
+        // deliberate: it carries the look-alike-wallet warning, and Pearl was the
+        // only coin whose in-app wallet link left pasiv.network (Verus already
+        // uses this pattern).
+        wallet_url: "https://pasiv.network/mine/pearl",
     },
     CoinSpec {
         coin: Coin::Rvn,
@@ -379,21 +383,22 @@ mod tests {
                 c.ticker
             );
         }
-        // Non-Pearl coins point at Pasiv's own /mine guide.
-        for c in ROSTER.iter().filter(|c| c.ticker != "prl") {
+        // EVERY coin now points at Pasiv's own /mine guide. Pearl was the lone
+        // exception only because it had no guide; pasiv.network/mine/pearl shipped
+        // 2026-08-28 and links the official Pearl Research Labs release and nothing
+        // else, so the safety property is preserved and routed through a page that
+        // also warns about look-alike wallet sites.
+        for c in ROSTER {
             assert!(
                 c.wallet_url.starts_with("https://pasiv.network/mine/"),
                 "{}: wallet_url should be a Pasiv guide",
                 c.ticker
             );
         }
-        // Pearl is a safety case: ONLY the official Pearl Research Labs repo, never
-        // a search-ranked look-alike. If this ever changes, it must stay official.
+        // Pearl remains a safety case: whatever it points at must never be a
+        // search-ranked look-alike.
         let prl = by_ticker("prl").unwrap();
-        assert_eq!(
-            prl.wallet_url,
-            "https://github.com/pearl-research-labs/pearl/releases"
-        );
+        assert_eq!(prl.wallet_url, "https://pasiv.network/mine/pearl");
         for bad in [
             "pearlwallet.org",
             "pearlchain.live",
