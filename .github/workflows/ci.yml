@@ -113,6 +113,56 @@ jobs:
           tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" git --redact --no-banner --config "$RUNNER_TEMP/rules.toml" .
 
+  # RUN the installer, don't just diff it. install.sh is what users pipe into a
+  # root shell, and until now nothing executed it anywhere automatic — the
+  # mirror job below only proves the two copies match, so both could be broken
+  # together and stay green. It also exercises the path added 2026-08-28, where
+  # a missing minisign is installed from the distro's own repositories and the
+  # install REFUSES rather than falling back to a checksum that shares an origin
+  # with the binary.
+  #
+  # No mining happens: the installer places the binary and a systemd unit and
+  # stops, because a node must be claimed and started deliberately. That is what
+  # keeps this inside GitHub's acceptable use — the release pipeline's sidecar
+  # smoke is `--version`-only for the same reason.
+  installer-runs:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: install.sh installs a verified pasivd
+        run: |
+          set -euo pipefail
+          # Prove the auto-install path is the one under test.
+          if command -v minisign >/dev/null 2>&1; then
+            sudo apt-get remove -y minisign >/dev/null 2>&1 || true
+          fi
+          ! command -v minisign >/dev/null 2>&1 || { echo "::error::minisign still present; the auto-install path would be skipped"; exit 1; }
+
+          sudo bash pasivd/install.sh
+
+          command -v pasivd >/dev/null || { echo "::error::pasivd not on PATH after install"; exit 1; }
+          command -v minisign >/dev/null || { echo "::error::installer did not install minisign"; exit 1; }
+          pasivd version
+          test -f /etc/systemd/system/pasivd.service || { echo "::error::unit not installed"; exit 1; }
+
+          # Installed, deliberately NOT running: claiming and starting are the
+          # user's explicit acts, and CI must never leave a miner running.
+          ! systemctl is-active --quiet pasivd || { echo "::error::installer started the daemon"; exit 1; }
+          ! systemctl is-enabled --quiet pasivd || { echo "::error::installer enabled the daemon"; exit 1; }
+          echo "installer OK: $(pasivd version 2>&1 | head -1)"
+
+      - name: install.sh refuses when the signature cannot be verified
+        run: |
+          set -euo pipefail
+          # Point the signature at a URL that 404s; everything else is untouched.
+          sed 's|^SIG_URL=.*|SIG_URL="https://github.com/hash-rate/pasiv-releases/releases/latest/download/definitely-not-a-signature"|' \
+            pasivd/install.sh > /tmp/install-nosig.sh
+          if sudo bash /tmp/install-nosig.sh; then
+            echo "::error::installer completed without a verifiable signature — it must fail closed"
+            exit 1
+          fi
+          echo "fail-closed OK: refused an unverifiable download"
+
   # The site serves pasiv.network/pasivd.sh; this repo owns pasivd/install.sh.
   # They must be byte-identical — they drifted once in the private era (the
   # site copy kept pointing at a moved repo namespace and only worked through
