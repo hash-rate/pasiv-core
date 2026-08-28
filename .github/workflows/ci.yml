@@ -138,10 +138,17 @@ jobs:
           fi
           ! command -v minisign >/dev/null 2>&1 || { echo "::error::minisign still present; the auto-install path would be skipped"; exit 1; }
 
-          sudo bash pasivd/install.sh
+          # Capture the run: the proof that verification happened is in its
+          # output, not in what is left on PATH afterwards.
+          sudo bash pasivd/install.sh 2>&1 | tee /tmp/install.log
 
           command -v pasivd >/dev/null || { echo "::error::pasivd not on PATH after install"; exit 1; }
-          command -v minisign >/dev/null || { echo "::error::installer did not install minisign"; exit 1; }
+          # The signature MUST have been checked. Do not assert minisign is on
+          # PATH: where the distro has no package the installer uses a pinned
+          # copy from a temp dir and never installs one system-wide, which is
+          # correct and was the first thing this job got wrong about itself.
+          grep -q "minisign signature valid" /tmp/install.log \
+            || { echo "::error::installer did not verify the signature"; exit 1; }
           pasivd version
           test -f /etc/systemd/system/pasivd.service || { echo "::error::unit not installed"; exit 1; }
 
