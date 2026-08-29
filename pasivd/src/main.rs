@@ -394,8 +394,8 @@ async fn cmd_run() -> Result<(), String> {
     // row, so the shape the companion parses is identical — capability, never
     // identity: core counts, usable threads and the CPU model, no serial, no id.
     // Null rather than a spurious {} if it somehow fails to serialise.
-    let hardware = serde_json::to_value(pasiv_core::hardware::detect())
-        .unwrap_or(serde_json::Value::Null);
+    let hardware =
+        serde_json::to_value(pasiv_core::hardware::detect()).unwrap_or(serde_json::Value::Null);
 
     // Earnings estimate: a separate client because CoinGecko 403s reqwest's
     // default agent, and a cached rate refreshed ~every 10 min (the desktop
@@ -868,8 +868,8 @@ mod hardware_uplink_tests {
     /// this is what would catch it instead of a person noticing.
     #[test]
     fn detect_serialises_to_the_keys_the_companion_reads() {
-        let v = serde_json::to_value(pasiv_core::hardware::detect())
-            .expect("hardware must serialise");
+        let v =
+            serde_json::to_value(pasiv_core::hardware::detect()).expect("hardware must serialise");
         let obj = v.as_object().expect("hardware is a JSON object");
         for key in ["cpu_cores", "usable_threads", "cpu_model", "gpus"] {
             assert!(obj.contains_key(key), "hardware blob lost the `{key}` key");
