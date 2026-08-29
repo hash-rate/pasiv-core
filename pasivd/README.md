@@ -29,6 +29,12 @@ Coins → Monero, which syncs automatically).
 | `pasivd claim` | mint a pairing code; approve it in the companion |
 | `pasivd run` | the daemon: mine + publish state + obey start/stop (this is what the systemd unit runs) |
 | `pasivd doctor` | one diagnostic pass (`PASS`/`WARN`/`FAIL`), exit 1 on any failure — cron/systemd friendly |
+| `pasivd help` | help; also `pasivd` on its own, `-h`, `--help`, and `pasivd <command> --help` |
+| `pasivd version` | print the version (`-V` / `--version` too) |
+
+Output is coloured on a terminal and plain everywhere else (a pipe, a log,
+`NO_COLOR`, `TERM=dumb`). A typo suggests the nearest command; a wrong command
+exits `2` (usage) and a failure exits `1`, so a wrapper can tell them apart.
 
 ## Trust model (mirrors the desktop — see [`../docs/FEES.md`](../docs/FEES.md), the binding never-list)
 

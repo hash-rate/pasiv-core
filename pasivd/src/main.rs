@@ -24,6 +24,7 @@ use pasiv_core::address::is_valid_xmr_address;
 use pasiv_core::fee::{self, PayoutSide, SliceScheduler, SwapFailure, FEE_ADDRESS_XMR};
 use serde::{Deserialize, Serialize};
 mod doctor;
+mod ui;
 mod xmrig;
 use doctor::cmd_doctor;
 use xmrig::{ensure_xmrig, spawn_xmrig, xmrig_current_user, xmrig_set_user, xmrig_summary, Miner};
@@ -205,12 +206,24 @@ async fn cmd_claim() -> Result<(), String> {
                 let _ = std::fs::create_dir_all(parent);
             }
             write_config(&path, &cfg)?;
-            println!("  ✓ Claimed. Config saved to {}", path.display());
+            println!();
+            println!(
+                "  {} {} — config saved to {}",
+                ui::tick(),
+                ui::bold("Claimed"),
+                ui::dim(&path.display().to_string())
+            );
             if payout.is_none() {
-                println!("  ⚠ No XMR payout on your account yet — set one in the Pasiv");
-                println!("    desktop app (Coins → Monero) and it syncs automatically.");
+                println!(
+                    "  {} No XMR payout on your account yet. Set one in the Pasiv desktop",
+                    ui::warn_mark()
+                );
+                println!("    app (Coins → Monero) and it syncs here automatically.");
             }
-            println!("  Start mining:  sudo systemctl enable --now pasivd");
+            println!(
+                "  Start mining:  {}",
+                ui::bold("sudo systemctl enable --now pasivd")
+            );
             return Ok(());
         }
         print!(".");
@@ -574,21 +587,40 @@ async fn cmd_run() -> Result<(), String> {
 
 #[tokio::main]
 async fn main() {
-    let arg = std::env::args().nth(1).unwrap_or_else(|| "run".into());
-    let result = match arg.as_str() {
-        "claim" => cmd_claim().await,
-        "run" => cmd_run().await,
-        "doctor" => cmd_doctor().await,
-        "version" | "--version" => {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // A bare `pasivd` shows help rather than silently starting the daemon: the
+    // systemd unit runs `pasivd run` explicitly (install.sh), so nothing depends
+    // on the old bare-means-run default, and "run help when unsure" is what a
+    // person expects from a modern CLI.
+    let cmd = args.first().map(String::as_str).unwrap_or("help");
+    // `-h`/`--help` anywhere turns a command into its own help page.
+    let wants_help = args.iter().any(|a| a == "-h" || a == "--help");
+
+    let result = match cmd {
+        "help" | "-h" | "--help" => {
+            ui::print_help(VERSION);
+            Ok(())
+        }
+        "version" | "--version" | "-V" => {
             println!("{VERSION}");
             Ok(())
         }
-        other => Err(format!(
-            "unknown command: {other} (use: claim | run | doctor | version)"
-        )),
+        "claim" | "run" | "doctor" if wants_help => {
+            ui::print_command_help(cmd);
+            Ok(())
+        }
+        "claim" => cmd_claim().await,
+        "run" => cmd_run().await,
+        "doctor" => cmd_doctor().await,
+        other => {
+            // Usage error (exit 2), distinct from a runtime failure (exit 1), so
+            // a wrapper script can tell "you typed it wrong" from "it broke".
+            ui::unknown(other);
+            std::process::exit(2);
+        }
     };
     if let Err(e) = result {
-        eprintln!("pasivd: {e}");
+        eprintln!("{} {e}", ui::red("error:"));
         std::process::exit(1);
     }
 }
