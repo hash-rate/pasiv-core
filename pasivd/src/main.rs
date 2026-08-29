@@ -386,6 +386,17 @@ async fn cmd_run() -> Result<(), String> {
     let mut accepted: u64 = 0;
     let mut rejected: u64 = 0;
 
+    // Detect the hardware ONCE — the CPU cannot change under a running process,
+    // and detect() shells out to read the model — then send it with every push.
+    // Without this a headless rig's `hardware` was always {}, so the companion
+    // showed no CPU for it while every desktop rig showed one. It is the SAME
+    // pasiv_core::hardware::detect() the desktop app serialises into its own rig
+    // row, so the shape the companion parses is identical — capability, never
+    // identity: core counts, usable threads and the CPU model, no serial, no id.
+    // Null rather than a spurious {} if it somehow fails to serialise.
+    let hardware = serde_json::to_value(pasiv_core::hardware::detect())
+        .unwrap_or(serde_json::Value::Null);
+
     // Earnings estimate: a separate client because CoinGecko 403s reqwest's
     // default agent, and a cached rate refreshed ~every 10 min (the desktop
     // re-ranks on a similar cadence) — the per-tick hashrate is what varies,
@@ -525,6 +536,7 @@ async fn cmd_run() -> Result<(), String> {
                 "name": hostname(),
                 "platform": "linux",
                 "app_version": VERSION,
+                "hardware": hardware,
                 "active_coin": "XMR",
                 // No "payouts" — see remote/api.rs. It was never read, and
                 // sending it contradicted the privacy policy. The edge
@@ -842,5 +854,32 @@ mod tests {
         let starting = build_snapshot("starting", 0.0, None);
         assert_eq!(starting["miners"]["xmrig"]["state"], "starting");
         assert!(starting["est_usd_day"].is_null());
+    }
+}
+
+#[cfg(test)]
+mod hardware_uplink_tests {
+    /// pasivd sends `serde_json::to_value(hardware::detect())` in its rig row,
+    /// and the mobile companion reads exactly these keys off it (see
+    /// pasiv-mobile Rig.fromRow: cpu_model, cpu_cores, usable_threads). This is
+    /// a cross-repo contract with nothing but a shared JSON shape between the
+    /// two, so pin the shape here: if pasiv-core ever renames a field, a
+    /// headless rig would silently go back to showing no CPU on the phone, and
+    /// this is what would catch it instead of a person noticing.
+    #[test]
+    fn detect_serialises_to_the_keys_the_companion_reads() {
+        let v = serde_json::to_value(pasiv_core::hardware::detect())
+            .expect("hardware must serialise");
+        let obj = v.as_object().expect("hardware is a JSON object");
+        for key in ["cpu_cores", "usable_threads", "cpu_model", "gpus"] {
+            assert!(obj.contains_key(key), "hardware blob lost the `{key}` key");
+        }
+        // Core count is always a positive number on a real host; the companion
+        // guards `is num` but a zero would render "0 threads", which is a lie.
+        assert!(
+            obj["cpu_cores"].as_u64().is_some_and(|n| n >= 1),
+            "cpu_cores must be a positive integer, got {}",
+            obj["cpu_cores"]
+        );
     }
 }
