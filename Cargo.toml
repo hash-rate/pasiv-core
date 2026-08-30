@@ -4,3 +4,11 @@ members = ["crates/pasiv-core", "pasivd"]
 # Vendored third-party code (MIT) is a path dependency, not a workspace member:
 # workspace-wide fmt/clippy/test must not rewrite or lint upstream sources.
 exclude = ["vendor/verushash-rs"]
+
+# Release profile lives at the workspace ROOT — Cargo ignores [profile.*] in a
+# member manifest (the warning every build printed), so pasivd was NOT actually
+# getting LTO or a stripped binary despite asking for both. Now it does: a
+# smaller, faster static musl daemon.
+[profile.release]
+lto = true
+strip = true

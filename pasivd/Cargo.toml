@@ -1,6 +1,6 @@
 [package]
 name = "pasivd"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "Headless Pasiv node: CPU-mines XMR to your payout, pairs with your account via a claim code, controllable from the Pasiv companion app."
 license = "GPL-3.0-only"
@@ -16,9 +16,6 @@ rand = "0.8"
 flate2 = "1"
 tar = "0.4"
 
-[profile.release]
-lto = true
-strip = true
 
 [dependencies.pasiv-core]
 path = "../crates/pasiv-core"

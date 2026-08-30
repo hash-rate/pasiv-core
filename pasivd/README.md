@@ -32,6 +32,12 @@ Coins → Monero, which syncs automatically).
 | `pasivd help` | help; also `pasivd` on its own, `-h`, `--help`, and `pasivd <command> --help` |
 | `pasivd version` | print the version (`-V` / `--version` too) |
 
+`doctor` also reports **perf**: whether the RandomX huge pages and the CPU MSR
+preset are actually in effect. The installer applies both automatically (a
+privileged `ExecStartPre` that runs before the sandbox drops), worth ~5-15%
+hashrate; `doctor` names it when a locked-down kernel (Secure Boot) or a missing
+`msr-tools` silently skipped it, so an under-earning node explains itself.
+
 Output is coloured on a terminal and plain everywhere else (a pipe, a log,
 `NO_COLOR`, `TERM=dumb`). A typo suggests the nearest command; a wrong command
 exits `2` (usage) and a failure exits `1`, so a wrapper can tell them apart.

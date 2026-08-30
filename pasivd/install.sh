@@ -130,6 +130,120 @@ $SUDO mv "$TMP" "$BIN_PATH"
 $SUDO chown 0:0 "$BIN_PATH"
 $SUDO chmod 755 "$BIN_PATH"
 
+# ---------------------------------------------------------------------------
+# Performance boost. The unit below sandboxes pasivd to a dynamic non-root
+# user (correct for a consumer machine), which also means the miner can never
+# reserve RandomX huge pages or apply the MSR preset — the two levers worth
+# 5–15% hashrate depending on silicon. So the unit runs ONE privileged
+# ExecStartPre script that does both, best-effort, before the sandbox drops.
+# Consumers should not have to know any of this exists.
+
+# wrmsr (msr-tools) is what applies the MSR preset. Best-effort: without it
+# the boost script skips that half and says so in the journal.
+if ! command -v wrmsr >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq msr-tools >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then
+    $SUDO dnf install -y -q msr-tools >/dev/null 2>&1 || true
+  elif command -v apk >/dev/null 2>&1; then
+    $SUDO apk add -q msr-tools >/dev/null 2>&1 || true
+  fi
+fi
+
+echo "→ installing performance boost (huge pages + MSR preset)"
+$SUDO mkdir -p /usr/local/libexec
+$SUDO tee /usr/local/libexec/pasivd-boost.sh >/dev/null <<'BOOST'
+#!/bin/sh
+# RandomX performance boost — run as root by pasivd.service (ExecStartPre=+)
+# just before the sandboxed daemon starts. EVERYTHING here is best-effort: a
+# locked-down kernel, an exotic CPU, or a container may refuse any line, and
+# mining must still start — so nothing here ever exits non-zero.
+#
+#   1. Huge pages: RandomX wants ~1168 2MB pages for its dataset plus one per
+#      mining thread. An unprivileged miner cannot raise vm.nr_hugepages.
+#      Missing pages cost a few percent hashrate.
+#   2. MSR preset: the exact registers and values xmrig applies when it has
+#      privileges (upstream scripts/randomx_boost.sh, GPLv3 like this repo).
+#      Worth ~5% on Intel and up to ~15% on AMD Zen. The sandboxed miner can
+#      never touch /dev/cpu/*/msr.
+#
+# Kernel lockdown (Secure Boot) forbids raw MSR writes outright; that is
+# detected and reported as one clear journal line instead of a spray of
+# per-CPU write failures.
+
+log() { echo "pasivd-boost: $*"; }
+
+# --- huge pages -------------------------------------------------------------
+want=$(( 1168 + $(nproc 2>/dev/null || echo 4) + 8 ))
+have=$(awk '/^HugePages_Total/{print $2}' /proc/meminfo 2>/dev/null)
+have=${have:-0}
+if [ "$have" -lt "$want" ]; then
+  if sysctl -w vm.nr_hugepages="$want" >/dev/null 2>&1; then
+    got=$(awk '/^HugePages_Total/{print $2}' /proc/meminfo 2>/dev/null)
+    log "huge pages: $have -> ${got:-?} (wanted $want)"
+  else
+    log "huge pages: could not raise vm.nr_hugepages (have $have, wanted $want)"
+  fi
+else
+  log "huge pages: $have already reserved"
+fi
+
+# --- MSR preset ---------------------------------------------------------
+# Registers, values, and CPU detection mirror xmrig's scripts/randomx_boost.sh
+# verbatim — hardware pokes are not something to improvise.
+case "$(uname -m)" in
+  x86_64) ;;
+  *) log "msr: not x86_64 — skipping"; exit 0 ;;
+esac
+if grep -qE '\[(integrity|confidentiality)\]' /sys/kernel/security/lockdown 2>/dev/null; then
+  log "msr: kernel lockdown (Secure Boot) blocks MSR writes — skipping. Disabling Secure Boot unlocks ~5-15% hashrate."
+  exit 0
+fi
+if [ -e /sys/module/msr/parameters/allow_writes ]; then
+  echo on > /sys/module/msr/parameters/allow_writes 2>/dev/null || true
+else
+  modprobe msr allow_writes=on 2>/dev/null || true
+fi
+if ! command -v wrmsr >/dev/null 2>&1; then
+  log "msr: wrmsr not installed (package: msr-tools) — skipping"
+  exit 0
+fi
+if grep -qE 'AMD Ryzen|AMD EPYC|AuthenticAMD' /proc/cpuinfo; then
+  if grep -qE 'cpu family[[:space:]]+:[[:space:]]*25' /proc/cpuinfo; then
+    if grep -qE 'model[[:space:]]+:[[:space:]]*(97|117)' /proc/cpuinfo; then
+      if wrmsr -a 0xc0011020 0x4400000000000 && wrmsr -a 0xc0011021 0x4000000000040 \
+         && wrmsr -a 0xc0011022 0x8680000401570000 && wrmsr -a 0xc001102b 0x2040cc10; then
+        log "msr: Zen4 preset applied"
+      else log "msr: Zen4 preset failed"; fi
+    else
+      if wrmsr -a 0xc0011020 0x4480000000000 && wrmsr -a 0xc0011021 0x1c000200000040 \
+         && wrmsr -a 0xc0011022 0xc000000401570000 && wrmsr -a 0xc001102b 0x2000cc10; then
+        log "msr: Zen3 preset applied"
+      else log "msr: Zen3 preset failed"; fi
+    fi
+  elif grep -qE 'cpu family[[:space:]]+:[[:space:]]*26' /proc/cpuinfo; then
+    if wrmsr -a 0xc0011020 0x4400000000000 && wrmsr -a 0xc0011021 0x4000000000040 \
+       && wrmsr -a 0xc0011022 0x8680000401570000 && wrmsr -a 0xc001102b 0x2040cc10; then
+      log "msr: Zen5 preset applied"
+    else log "msr: Zen5 preset failed"; fi
+  else
+    if wrmsr -a 0xc0011020 0 && wrmsr -a 0xc0011021 0x40 \
+       && wrmsr -a 0xc0011022 0x1510000 && wrmsr -a 0xc001102b 0x2000cc16; then
+      log "msr: Zen1/Zen2 preset applied"
+    else log "msr: Zen1/Zen2 preset failed"; fi
+  fi
+elif grep -q Intel /proc/cpuinfo; then
+  if wrmsr -a 0x1a4 0xf; then
+    log "msr: Intel preset applied (prefetchers off)"
+  else log "msr: Intel preset failed"; fi
+else
+  log "msr: unrecognised CPU vendor — skipping"
+fi
+exit 0
+BOOST
+$SUDO chown 0:0 /usr/local/libexec/pasivd-boost.sh
+$SUDO chmod 755 /usr/local/libexec/pasivd-boost.sh
+
 echo "→ installing systemd unit"
 $SUDO tee "$UNIT_PATH" >/dev/null <<'UNIT'
 [Unit]
@@ -138,6 +252,11 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# One privileged pass ('+') before the sandbox drops, never fatal ('-'):
+# reserves RandomX huge pages and applies xmrig's MSR preset. The sandboxed
+# miner cannot do either itself, and without them a node quietly leaves
+# 5-15% hashrate on the table. Details: /usr/local/libexec/pasivd-boost.sh.
+ExecStartPre=-+/usr/local/libexec/pasivd-boost.sh
 ExecStart=/usr/local/bin/pasivd run
 Restart=always
 RestartSec=10
