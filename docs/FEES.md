@@ -134,5 +134,42 @@ Pasiv will **not**, in any build:
    payout address: there is no way to express those commands, they expire
    server-side after two minutes, and the limit is enforced by the database
    schema, not just by app code.
+9. Trade your hardware for hashrate. No overclocking, no undervolting, no
+   raising thermal or power limits, ever — not as a default, not as an option.
+   Pasiv runs on machines people own and use.
 
 Break any of these and it's a bug, not a business model.
+
+---
+
+## 5. Getting the most out of a machine
+
+Pasiv's fee is a share of what you earn, so a node running below its potential
+costs us exactly as much as it costs you. Tuning is therefore the app's job, not
+yours — bounded by never-list item 9 above.
+
+**Applied for you, automatically.** RandomX is bottlenecked on memory latency,
+and two settings recover most of what a default setup loses: **huge pages** and
+a **CPU MSR preset** (the same registers [XMRig's own
+`randomx_boost.sh`](https://github.com/xmrig/xmrig/blob/master/scripts/randomx_boost.sh)
+writes). Together they are typically worth **5–15%**. Both need root once, and
+neither has a downside you would notice, so the `pasivd` installer applies them
+itself — a privileged step that runs before the daemon drops into its sandbox.
+
+**Asked once, when it costs you something.** Windows large pages need an account
+privilege and a sign-out to take effect, so the desktop app asks rather than
+assumes, and tells you the gain first.
+
+**Refused, when the price is wrong.** The Windows MSR mod is worth another
+~10–15% and needs the WinRing0 kernel driver, which sits on Microsoft's
+vulnerable-driver blocklist. Pasiv does not ship it. The never-list outranks the
+hashrate.
+
+**Named, when it cannot be had.** With Secure Boot on, the kernel refuses the raw
+MSR writes this boost needs, and no amount of setup changes that. `pasivd doctor`
+says so plainly — including that turning Secure Boot off is the only thing that
+would unlock it — rather than sending you after a fix that cannot work.
+
+Run `pasivd doctor` to see the state of each of these on any node; every
+un-applied gain is reported with its size, because a machine mining happily at
+85% of its ceiling otherwise looks identical to a healthy one.

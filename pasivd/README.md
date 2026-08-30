@@ -53,6 +53,28 @@ exits `2` (usage) and a failure exits `1`, so a wrapper can tell them apart.
   edge function, whose pure decision logic is tested in the app repository).
 - The miner binary (XMRig) is fetched from its official release and
   **sha256-verified against a compile-time pin** before it runs.
+- **Your hardware is not the product** — no overclocking, undervolting, or
+  raised thermal/power limits, ever (never-list item 9). The node mines with
+  what is already spare: `Nice=19`, `CPUWeight=20`, and it yields to real work.
+
+## Performance
+
+The unit sandboxes pasivd to a dynamic non-root user, which is right for a
+machine you also use — and it means the miner cannot reserve RandomX huge pages
+or apply the CPU MSR preset itself. Those are worth roughly **5-15%** together,
+so the installer applies them for you: `/usr/local/libexec/pasivd-boost.sh` runs
+privileged (`ExecStartPre=-+`) just before the sandbox drops, and is best-effort
+throughout — a locked-down kernel, a container, or a missing tool skips
+gracefully and mining still starts.
+
+MSR values come verbatim from [XMRig's
+`randomx_boost.sh`](https://github.com/xmrig/xmrig/blob/master/scripts/randomx_boost.sh)
+(GPLv3, like this repo), covering AMD Zen1-5 and Intel. Hardware pokes are not
+something to improvise.
+
+`pasivd doctor` reports whether each landed. **Secure Boot blocks the MSR half
+outright** — the kernel refuses raw MSR writes under lockdown — and `doctor`
+says so explicitly rather than implying a fix exists.
 
 ## Config & data
 
