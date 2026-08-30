@@ -120,7 +120,12 @@ Pasiv will **not**, in any build:
 3. Change the Pasiv fee percentage or fee address **without a versioned
    changelog entry and a new signed release.** (Both are compile-time
    constants in this repository.)
-4. Collect telemetry that isn't opt-in and documented.
+4. Collect telemetry that is identifying, undisclosed, or that you cannot switch
+   off. Product analytics are **anonymous by construction** — Pasiv never calls
+   `identify()`, so there is no profile to join anything to — every event is
+   listed in `docs/ANALYTICS.md`, and one toggle in Settings stops collection
+   entirely (an opted-out install makes no request at all). Wallet and payout
+   addresses are never sent, from anywhere.
 5. Charge fee time in any state other than `Mining`.
 6. Hide how the fee works — the exact mechanism is this file plus the code
    beside it, and every slice is shown in the app's fee ledger.
