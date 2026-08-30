@@ -158,6 +158,28 @@ jobs:
           ! systemctl is-enabled --quiet pasivd || { echo "::error::installer enabled the daemon"; exit 1; }
           echo "installer OK: $(pasivd version 2>&1 | head -1)"
 
+      - name: the installer and its embedded boost pass shellcheck
+        run: |
+          set -euo pipefail
+          # install.sh is piped into a root shell on other people's machines, and
+          # it now embeds a script that pokes CPU MSRs. A quoting slip here is a
+          # root-level bug on a consumer box, so both get linted — the embedded
+          # boost separately, because shellcheck cannot see inside a heredoc.
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning pasivd/install.sh
+          awk "/<<'BOOST'/,/^BOOST\$/" pasivd/install.sh | sed '1d;$d' > /tmp/boost.sh
+          test -s /tmp/boost.sh || { echo "::error::could not extract the boost script — did the heredoc marker change?"; exit 1; }
+          shellcheck -s sh -S warning /tmp/boost.sh
+          # The boost runs as root before the daemon's sandbox drops. It must
+          # never be able to stop a node from mining, so it may not exit
+          # non-zero on any path — the unit also marks it non-fatal ('-'), and
+          # this is the belt to that braces.
+          grep -q 'ExecStartPre=-+/usr/local/libexec/pasivd-boost.sh' pasivd/install.sh \
+            || { echo "::error::boost must stay a non-fatal (-) privileged (+) ExecStartPre"; exit 1; }
+          sudo sh /tmp/boost.sh >/tmp/boost.out 2>&1 \
+            || { echo "::error::boost exited non-zero — it must always succeed"; cat /tmp/boost.out; exit 1; }
+          cat /tmp/boost.out
+
       - name: install.sh refuses when the signature cannot be verified
         run: |
           set -euo pipefail
