@@ -74,6 +74,11 @@ pub enum Coin {
     /// pearlhash's 2%), ~2.5 GB working set so it fits the 3–6 GB cards that
     /// KawPow's DAG refuses. Address is a '9'-prefixed base58 P2PK.
     Erg,
+    /// Ethereum Classic — Etchash (Dagger-Hashimoto) on the GPU via
+    /// SRBMiner-Multi. EXPERIMENTAL and dark by default (`CoinSpec.experimental`).
+    /// The first roster coin whose memory requirement is a moving target: see
+    /// `crate::etchash`.
+    Etc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

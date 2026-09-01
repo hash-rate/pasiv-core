@@ -54,6 +54,12 @@ pub struct CoinSpec {
     /// claims, some describing a different chain — so PRL links ONLY to the
     /// official Pearl Research Labs GitHub releases, never a search-ranked domain.
     pub wallet_url: &'static str,
+    /// Dark by default. An experimental coin is absent from the picker, the
+    /// profit ranking, the doctor and every published lane strip until it is
+    /// switched on — the spike-flag discipline, expressed in the roster rather
+    /// than sprinkled through call sites. Promote by flipping this to false in
+    /// the same commit that adds its hardware verification.
+    pub experimental: bool,
 }
 
 impl CoinSpec {
@@ -92,7 +98,21 @@ impl CoinSpec {
 
 /// The coins this build can mine, in roster order.
 pub fn available() -> impl Iterator<Item = &'static CoinSpec> {
+    ROSTER
+        .iter()
+        .filter(|c| c.is_available() && !c.experimental)
+}
+
+/// Every coin this build could run *including* experimental ones — for
+/// diagnostics and tests only. Never use this to populate user-facing lists.
+pub fn available_including_experimental() -> impl Iterator<Item = &'static CoinSpec> {
     ROSTER.iter().filter(|c| c.is_available())
+}
+
+/// 2Miners' per-address dashboard. No account exists to link to — the address
+/// IS the account, so this URL works the moment the first share lands.
+fn etc_dashboard(addr: &str) -> String {
+    format!("https://etc.2miners.com/account/{addr}")
 }
 
 fn xmr_dashboard(addr: &str) -> String {
@@ -170,6 +190,7 @@ pub const ROSTER: &[CoinSpec] = &[
         coingecko_id: "monero",
         stats_url: "https://monero.herominers.com/api/stats",
         wallet_url: "https://pasiv.network/mine/monero",
+        experimental: false,
     },
     CoinSpec {
         coin: Coin::Zeph,
@@ -188,6 +209,7 @@ pub const ROSTER: &[CoinSpec] = &[
         coingecko_id: "zephyr-protocol",
         stats_url: "https://zephyr.herominers.com/api/stats",
         wallet_url: "https://pasiv.network/mine/zephyr",
+        experimental: false,
     },
     CoinSpec {
         coin: Coin::Sal,
@@ -207,6 +229,7 @@ pub const ROSTER: &[CoinSpec] = &[
         coingecko_id: "salvium",
         stats_url: "https://salvium.herominers.com/api/stats",
         wallet_url: "https://pasiv.network/mine/salvium",
+        experimental: false,
     },
     CoinSpec {
         coin: Coin::Vrsc,
@@ -228,6 +251,7 @@ pub const ROSTER: &[CoinSpec] = &[
         // so no HeroMiners-shaped stats source is needed.
         stats_url: "",
         wallet_url: "https://pasiv.network/mine/verus",
+        experimental: false,
     },
     CoinSpec {
         coin: Coin::Prl,
@@ -276,6 +300,7 @@ pub const ROSTER: &[CoinSpec] = &[
         // only coin whose in-app wallet link left pasiv.network (Verus already
         // uses this pattern).
         wallet_url: "https://pasiv.network/mine/pearl",
+        experimental: false,
     },
     CoinSpec {
         coin: Coin::Rvn,
@@ -311,6 +336,7 @@ pub const ROSTER: &[CoinSpec] = &[
         // HeroMiners-shaped stats path.
         stats_url: "",
         wallet_url: "https://pasiv.network/mine/ravencoin",
+        experimental: false,
     },
     CoinSpec {
         coin: Coin::Erg,
@@ -351,6 +377,55 @@ pub const ROSTER: &[CoinSpec] = &[
         // estimate comes through profit::ergo_rate(), not this stats path.
         stats_url: "",
         wallet_url: "https://pasiv.network/mine/ergo",
+        experimental: false,
+    },
+    CoinSpec {
+        coin: Coin::Etc,
+        ticker: "etc",
+        // GPU -> Ethereum Classic via SRBMiner-Multi (algo `etchash`) — the same
+        // engine as Pearl/Ravencoin/Ergo, so this is a roster row and not a new
+        // sidecar. VERIFIED ON HARDWARE 2026-09-02 (docs/spikes/SPIKE-ETC-ETCHASH-AMD.md):
+        // SRBMiner 3.5.3 on an RTX 4060, 14.01 MH/s, first accepted share 3m49s
+        // after connect, 1 accepted / 0 rejected, and 2Miners' own account API
+        // showed the worker online.
+        //
+        // Two things make ETC different from the other GPU coins:
+        //  * Its dev fee is the LOWEST of our GPU algos — 0.65%, against
+        //    pearlhash's 2.00%, autolykos2's 1.00% and kawpow's 0.85%.
+        //  * Its address is a plain EVM `0x`, so a wallet-sign-in user already
+        //    has one and needs no new wallet at all.
+        //
+        // EXPERIMENTAL: dark until an AMD card verifies the vendor claim that is
+        // this lane's whole reason for existing.
+        miner: MinerId::SrbMiner,
+        algo: Some("etchash"),
+        // 2Miners: 1.0% fee, 0.1 ETC minimum, PPLNS, NO registration — the
+        // address is the login. Verified from the pool's own structured data and
+        // TCP-reachable in 407 ms from the rack on 2026-09-02. Port 11010 is the
+        // same pool over TLS and is the upgrade path once the lane ships.
+        // Nanopool, Hiveon and K1Pool were all unreachable when tested and are
+        // not fallbacks until that is explained.
+        pool_host: "etc.2miners.com",
+        pool_port: 1010,
+        tls: false,
+        // ZERO here ON PURPOSE — the static gate cannot express this coin.
+        // Etchash's DAG grows 8 MiB/epoch forever (4.605 GB on 2026-09-02,
+        // ~323 MiB/year), so the real gate is computed at start time by
+        // `crate::etchash::required_vram_mib` against the live chain height.
+        // A constant would be wrong within months. Promoting this lane REQUIRES
+        // wiring that call into pre-flight; until then the lane is experimental
+        // and this zero is unreachable.
+        min_vram_mb: 0,
+        validate: crate::address::is_valid_etc_address,
+        dashboard_url: etc_dashboard,
+        coingecko_id: "ethereum-classic",
+        // Deliberately empty: `auto_rankable()` is XMRig-only, because the
+        // ranking compares price x reward / difficulty and only cancels the
+        // machine's hashrate WITHIN one algorithm. There is no GPU ranker to
+        // register with — see the verdict doc.
+        stats_url: "",
+        wallet_url: "https://pasiv.network/mine/etc",
+        experimental: true,
     },
 ];
 
@@ -524,5 +599,100 @@ mod tests {
         assert!(url("zeph").contains("#/dashboard"));
         assert!(url("sal").contains("#/dashboard"));
         assert!(url("prl").starts_with("https://pearl.luckypool.io/miner-stats"));
+    }
+}
+
+#[cfg(test)]
+mod etc_lane_tests {
+    use super::*;
+
+    fn etc() -> &'static CoinSpec {
+        ROSTER
+            .iter()
+            .find(|c| c.ticker == "etc")
+            .expect("etc in roster")
+    }
+
+    /// THE FLAG TEST. The brief's hardest requirement is that ETC is invisible
+    /// when off, and "invisible" has to mean the roster itself, not a check at
+    /// each call site that someone will forget.
+    ///
+    /// ⚠️ HONEST LIMIT: on macOS this test passes for the WRONG REASON. ETC is a
+    /// SRBMiner coin and there is no macOS SRBMiner build, so `is_available()`
+    /// already excludes it and deleting the `!c.experimental` filter changes
+    /// nothing here — verified by mutation on 2026-09-02, where removing the
+    /// filter left all tests green on a Mac. The guard is only load-bearing on
+    /// Windows/Linux and MUST be mutation-checked there before this lane is
+    /// promoted. `no_experimental_coin_ever_reaches_available` below is the
+    /// platform-independent half.
+    #[test]
+    fn etc_is_dark_by_default() {
+        assert!(etc().experimental);
+        assert!(
+            !available().any(|c| c.ticker == "etc"),
+            "an experimental coin must not reach the picker, ranker or doctor"
+        );
+        // …but it is still reachable for diagnostics and these tests — on the
+        // platforms that have an SRBMiner build at all. On macOS ETC is absent
+        // for the ordinary platform reason, which this asserts rather than
+        // silently passing on a technicality.
+        assert_eq!(
+            available_including_experimental().any(|c| c.ticker == "etc"),
+            cfg!(not(target_os = "macos")),
+            "ETC follows the SRBMiner platform gate like every other GPU coin"
+        );
+    }
+
+    /// The invariant that holds on every platform: whatever `available()`
+    /// yields, none of it is experimental. This is what actually encodes the
+    /// promise; the ETC-specific test above is a stronger statement that only
+    /// one platform can make.
+    #[test]
+    fn no_experimental_coin_ever_reaches_available() {
+        for c in available() {
+            assert!(!c.experimental, "{} leaked into available()", c.ticker);
+        }
+    }
+
+    #[test]
+    fn no_shipped_coin_is_accidentally_experimental() {
+        for c in ROSTER.iter().filter(|c| c.ticker != "etc") {
+            assert!(!c.experimental, "{} must stay shipped", c.ticker);
+        }
+    }
+
+    #[test]
+    fn etc_validates_evm_addresses_and_rejects_other_coins() {
+        let v = etc().validate;
+        assert!(v("0x0c25a63ecF2fc2751C7a435c046227679df7cEeA"));
+        assert!(!v("0x0c25a63ECF2fc2751C7a435c046227679df7cEeA")); // bad checksum
+        assert!(!v("9f4QF8AD1nQ3nJahQVkMj8hFSVVzVom77b52JU7EW71Zexg6N8v")); // ERG
+    }
+
+    /// The static VRAM gate is deliberately unusable for this coin, and that
+    /// must be loud rather than look like an oversight.
+    #[test]
+    fn etc_does_not_use_the_static_vram_gate() {
+        assert_eq!(etc().min_vram_mb, 0, "ETC sizes its DAG at start time");
+        // Every OTHER GPU coin does use it, so the zero is specific, not a bug.
+        for c in ROSTER
+            .iter()
+            .filter(|c| c.miner == MinerId::SrbMiner && c.ticker != "etc")
+        {
+            assert!(
+                c.min_vram_mb > 0,
+                "{} should still gate statically",
+                c.ticker
+            );
+        }
+    }
+
+    /// ETC is not auto-rankable, for the same reason VRSC/PRL/RVN/ERG are not:
+    /// cross-algorithm ranking is meaningless. Pinned so a future "just add it
+    /// to Auto" does not silently start comparing MH/s against H/s.
+    #[test]
+    fn etc_is_not_auto_rankable() {
+        assert!(!etc().auto_rankable());
+        assert!(etc().stats_url.is_empty());
     }
 }

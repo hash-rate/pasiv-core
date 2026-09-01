@@ -31,6 +31,7 @@
 pub mod address;
 pub mod coins;
 pub mod earnings;
+pub mod etchash;
 pub mod fee;
 pub mod hardware;
 pub mod profit;

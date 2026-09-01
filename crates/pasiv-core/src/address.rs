@@ -135,9 +135,129 @@ pub fn is_valid_prl_address(a: &str) -> bool {
     }
 }
 
+/// Ethereum Classic (ETC) payout address — a plain EVM `0x` address, with the
+/// EIP-55 checksum enforced *only when the caller supplied one*.
+///
+/// This is the one validator in this module that can check more than shape, and
+/// the rule it implements is subtle enough to be worth stating:
+///
+/// - **All-lowercase (or all-uppercase) is valid.** EIP-55 is backwards
+///   compatible by design; an address with no mixed case carries no checksum to
+///   verify, and rejecting it would refuse addresses every wallet still emits.
+/// - **Mixed case means a checksum is present, so it must be correct.** This is
+///   the case that catches a real user error — a transposed or mistyped
+///   character in an address copied by hand — which shape-only validation
+///   cannot see. A wrong checksum here is very likely a wrong address, and
+///   mining to a wrong address pays a stranger, irreversibly.
+///
+/// Why this matters more for ETC than for the rest of the roster: the other
+/// coins' addresses carry checksums we do NOT verify (see the module note), so
+/// they are shape-only and the pool's authorize is the real check. ETC is
+/// different because the checksum is cheap to verify locally and the failure is
+/// silent — pools accept any well-formed `0x` address, so an ETC typo does not
+/// bounce at authorize the way a malformed Monero address does. It mines
+/// happily into someone else's wallet.
+pub fn is_valid_etc_address(a: &str) -> bool {
+    let Some(hex) = a.strip_prefix("0x") else {
+        return false;
+    };
+    if hex.len() != 40 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+    let has_upper = hex.chars().any(|c| c.is_ascii_uppercase());
+    let has_lower = hex.chars().any(|c| c.is_ascii_lowercase());
+    if !(has_upper && has_lower) {
+        return true; // no checksum encoded — nothing to verify
+    }
+    eip55(hex) == hex
+}
+
+/// EIP-55: uppercase hex digit `i` iff nibble `i` of keccak256(lowercase-hex) >= 8.
+fn eip55(hex: &str) -> String {
+    use tiny_keccak::{Hasher, Keccak};
+    let lower = hex.to_ascii_lowercase();
+    let mut hash = [0u8; 32];
+    let mut k = Keccak::v256();
+    k.update(lower.as_bytes());
+    k.finalize(&mut hash);
+    lower
+        .chars()
+        .enumerate()
+        .map(|(i, c)| {
+            // Nibble i: high nibble of byte i/2 when i is even, else the low one.
+            let nib = if i.is_multiple_of(2) {
+                hash[i / 2] >> 4
+            } else {
+                hash[i / 2] & 0x0f
+            };
+            if c.is_ascii_digit() || nib < 8 {
+                c
+            } else {
+                c.to_ascii_uppercase()
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The four canonical EIP-55 vectors from the EIP itself, plus the address
+    /// this spike actually mined to on 2026-09-02.
+    #[test]
+    fn etc_accepts_the_official_eip55_vectors() {
+        for a in [
+            "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+            "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
+            "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB",
+            "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb",
+            // Mined live on the rack against 2Miners during this spike.
+            "0x0c25a63ecF2fc2751C7a435c046227679df7cEeA",
+        ] {
+            assert!(is_valid_etc_address(a), "should accept {a}");
+        }
+    }
+
+    #[test]
+    fn etc_accepts_uncased_addresses_because_they_carry_no_checksum() {
+        // EIP-55 is backwards compatible: no mixed case means nothing to check.
+        assert!(is_valid_etc_address(
+            "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed"
+        ));
+        assert!(is_valid_etc_address(
+            "0X5AAEB6053F3E94C9B9A09F33669435E7EF1BEAED"
+                .to_lowercase()
+                .as_str()
+        ));
+    }
+
+    #[test]
+    fn etc_rejects_a_bad_checksum_when_one_is_offered() {
+        // THE CASE THAT MATTERS: a single character case-flipped. Shape-only
+        // validation waves this through and the user mines to a stranger.
+        assert!(!is_valid_etc_address(
+            "0x5AAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
+        ));
+        assert!(!is_valid_etc_address(
+            "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d358"
+        ));
+    }
+
+    #[test]
+    fn etc_rejects_malformed_shapes() {
+        for a in [
+            "",
+            "0x",
+            "5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed", // no 0x
+            "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAe", // 39
+            "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAedd", // 41
+            "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeZ", // non-hex
+            "prl1pqea7hz42566cckfmg70uyw43e7c67rtazrvy927ghjcx6txn5lzsjrlwl2",
+        ] {
+            assert!(!is_valid_etc_address(a), "should reject {a:?}");
+        }
+    }
 
     #[test]
     fn pearl_address_is_bech32_prl1() {
