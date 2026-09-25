@@ -1,6 +1,6 @@
 [package]
 name = "pasivd"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Headless Pasiv node: CPU-mines Monero paid to your address (USDT via unMineable, or XMR direct), pairs with your account via a claim code, controllable from the Pasiv companion app."
 license = "GPL-3.0-only"
@@ -15,6 +15,7 @@ hex = "0.4"
 rand = "0.8"
 flate2 = "1"
 tar = "0.4"
+minisign-verify = "0.2"
 
 
 [dependencies.pasiv-core]

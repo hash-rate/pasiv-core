@@ -29,7 +29,8 @@ automatically).
 | | |
 |---|---|
 | `pasivd claim` | mint a pairing code; approve it in the companion |
-| `pasivd run` | the daemon: mine + publish state + obey start/stop (this is what the systemd unit runs) |
+| `pasivd run` | the daemon: mine + publish state + obey start/stop/update (this is what the systemd unit runs) |
+| `pasivd update` | fetch the latest release, verify its signature, stage it for the next start (`sudo pasivd update && sudo systemctl restart pasivd`) |
 | `pasivd doctor` | one diagnostic pass (`PASS`/`WARN`/`FAIL`), exit 1 on any failure — cron/systemd friendly |
 | `pasivd help` | help; also `pasivd` on its own, `-h`, `--help`, and `pasivd <command> --help` |
 | `pasivd version` | print the version (`-V` / `--version` too) |
@@ -52,8 +53,19 @@ exits `2` (usage) and a failure exits `1`, so a wrapper can tell them apart.
   same compile-time fee address as the desktop on that route (the BTC treasury
   on unMineable, the Monero fee address direct). A headless node is not a
   fee-free loophole.
-- **Remote actions are start/stop only** — nothing from the phone can change the
-  coin, pool, or payout.
+- **Remote actions are start, stop and update** — nothing from the phone can
+  change the coin, pool, or payout, and an update installs only a release Pasiv
+  signed. A stop survives restarts: a node you paused stays paused.
+- **Signed self-update** — from 0.1.6 the node checks for a new release once a
+  day and when you tap Update in the companion. The download must carry a valid
+  signature from the same pinned minisign key as every desktop update, or it is
+  refused. The installed `/usr/local/bin/pasivd` is never overwritten (the
+  sandbox can't write it): the update is staged in `/var/lib/pasivd/update/`,
+  and at each start the installed binary re-verifies it and runs it only if it
+  is signed and newer. A staged build that never checks in is abandoned after
+  three starts, and the installed one carries on. Nodes on 0.1.5 or earlier
+  need one manual update: `curl -fsSL https://pasiv.network/pasivd.sh | sh &&
+  sudo systemctl restart pasivd`.
 - **No payout uplink** — the push never carries a payout address (enforced by the
   edge function, whose pure decision logic is tested in the app repository).
 - The miner binary (XMRig) is fetched from its official release and
@@ -85,8 +97,9 @@ says so explicitly rather than implying a fix exists.
 
 - `/etc/pasivd.json` — device id + secret (a bearer credential; kept `0600`).
   Override the path with `PASIVD_CONFIG`.
-- `/var/lib/pasivd/` — the fetched XMRig, and `fee-ledger.jsonl` (one JSON line
-  per fee slice, the same format the desktop writes).
+- `/var/lib/pasivd/` — the fetched XMRig, `fee-ledger.jsonl` (one JSON line
+  per fee slice, the same format the desktop writes), `stopped` (present while
+  the owner has the node stopped), and `update/` (a staged signed release).
 
 ## Build & test
 

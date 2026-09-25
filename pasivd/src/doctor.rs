@@ -63,22 +63,43 @@ pub async fn cmd_doctor() -> Result<(), String> {
         }
     };
 
-    // payout: the address every share pays to.
-    match cfg.as_ref().and_then(|c| c.payout_xmr.as_deref()) {
-        Some(a) if is_valid_xmr_address(a) => {
+    // payout: the address every share pays to. USDT (unMineable) wins over
+    // XMR, exactly as `target` chooses — see main.rs.
+    let usdt = cfg.as_ref().and_then(|c| c.payout_usdt.as_deref());
+    let xmr = cfg.as_ref().and_then(|c| c.payout_xmr.as_deref());
+    match (usdt, xmr) {
+        (Some(a), _)
+            if pasiv_core::address::is_valid_bsc_address(a)
+                || pasiv_core::address::is_valid_tron_address(a) =>
+        {
+            report(
+                "PASS",
+                "payout",
+                "USDT address shape ok (paid via unMineable)".into(),
+            )
+        }
+        (Some(_), _) => report(
+            "FAIL",
+            "payout",
+            "saved USDT address has the wrong shape".into(),
+        ),
+        (None, Some(a)) if is_valid_xmr_address(a) => {
             report("PASS", "payout", "XMR address shape ok".into())
         }
-        Some(_) => report(
+        (None, Some(_)) => report(
             "FAIL",
             "payout",
             "saved XMR address has the wrong shape".into(),
         ),
-        None => report(
+        (None, None) => report(
             "WARN",
             "payout",
-            "no XMR payout saved (expected when the account pays in USDT) — otherwise set one in the desktop app's Wallets tab".into(),
+            "no payout saved yet — set one in the desktop app's Wallets tab".into(),
         ),
     }
+
+    // update: what the launcher will run at the next start.
+    report("INFO", "update", crate::update::describe());
 
     // miner binary: present + still matching the pin (a drifted cache is the
     // desktop's v0.4.28 bug class).

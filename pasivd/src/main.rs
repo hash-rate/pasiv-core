@@ -16,8 +16,8 @@
 //!     same compile-time fee address as the desktop on the same route (the
 //!     BTC treasury on unMineable, the Monero address direct), via the same
 //!     xmrig config hot-reload
-//!   - remote actions are start/stop only (the desktop additionally accepts
-//!     signed updates; see docs/FEES.md never-list item 8)
+//!   - remote actions are start, stop and update, and an update installs only
+//!     a release Pasiv signed (docs/FEES.md never-list item 8; see update.rs)
 //!   - the miner binary is fetched from xmrig's official release and
 //!     sha256-verified against a compile-time pin before first run
 
@@ -29,6 +29,7 @@ use pasiv_core::fee::{self, PayoutSide, SliceScheduler, SwapFailure, FEE_ADDRESS
 use serde::{Deserialize, Serialize};
 mod doctor;
 mod ui;
+mod update;
 mod xmrig;
 use doctor::cmd_doctor;
 use xmrig::{ensure_xmrig, spawn_xmrig, xmrig_current_user, xmrig_set_user, xmrig_summary, Miner};
@@ -463,7 +464,11 @@ async fn cmd_run() -> Result<(), String> {
     let bin = ensure_xmrig(&client).await?;
 
     let mut miner: Option<Miner> = None;
-    let mut want_mining = true; // a headless node's default job is to mine
+    // A headless node's default job is to mine — unless its owner stopped it.
+    // The stop survives a restart (an update restarts the process), so a
+    // node the owner paused never starts mining again by itself.
+    let stopped_flag = data_dir().join("stopped");
+    let mut want_mining = !stopped_flag.exists();
     let mut mining_secs: u64 = 0;
     // The shared enforcement state machine — fresh per spawn (a respawned
     // miner always comes up on the user's address).
@@ -643,21 +648,66 @@ async fn cmd_run() -> Result<(), String> {
             let id = cmd["id"].as_str().unwrap_or("").to_string();
             let action = cmd["action"].as_str().unwrap_or("");
             println!("remote command: {action}");
-            match action {
-                "start" => want_mining = true,
-                "stop" => want_mining = false,
-                _ => {}
-            }
+            let mut restart_into: Option<String> = None;
+            let (ok, result) = match action {
+                "start" => {
+                    want_mining = true;
+                    let _ = std::fs::remove_file(&stopped_flag);
+                    (true, "start ok".to_string())
+                }
+                "stop" => {
+                    want_mining = false;
+                    let _ = std::fs::write(&stopped_flag, b"");
+                    (true, "stop ok".to_string())
+                }
+                "update" => match update::fetch_and_stage(&client).await {
+                    Ok(Some(v)) => {
+                        restart_into = Some(v.clone());
+                        (true, format!("updating to {v}"))
+                    }
+                    Ok(None) => (true, "already up to date".to_string()),
+                    Err(e) => (false, format!("update failed: {e}")),
+                },
+                other => (false, format!("unsupported command: {other}")),
+            };
             let _ = api(
                 &client,
                 serde_json::json!({
                     "action":"complete","device_id":cfg.device_id,"secret":cfg.secret,
-                    "command_id": id, "ok": true, "result": format!("{action} ok"),
+                    "command_id": id, "ok": ok, "result": result,
                 }),
             )
             .await;
+            if let Some(v) = restart_into {
+                restart_for_update(&mut miner, &v).await;
+            }
+        }
+        // Checked in: whichever build this is, it works.
+        update::mark_healthy();
+
+        // Daily update check (17 280 ticks of 5 s), first one ~10 min after
+        // start so a crash-looping node never hammers the release host.
+        if tick % 17_280 == 120 {
+            match update::fetch_and_stage(&client).await {
+                Ok(Some(v)) => restart_for_update(&mut miner, &v).await,
+                Ok(None) => {}
+                Err(e) => eprintln!("update check failed: {e}"),
+            }
         }
     }
+}
+
+/// A verified update is staged: stop the miner and exit, so systemd
+/// (Restart=always) starts the process again and the launcher execs the new
+/// build. The miner is killed first so it never outlives the process that
+/// owns its fee slice.
+async fn restart_for_update(miner: &mut Option<Miner>, version: &str) {
+    if let Some(m) = miner {
+        let _ = m.child.kill().await;
+    }
+    *miner = None;
+    println!("update {version} staged — restarting into it");
+    std::process::exit(0);
 }
 
 #[tokio::main]
@@ -680,13 +730,17 @@ async fn main() {
             println!("{VERSION}");
             Ok(())
         }
-        "claim" | "run" | "doctor" if wants_help => {
+        "claim" | "run" | "doctor" | "update" if wants_help => {
             ui::print_command_help(cmd);
             Ok(())
         }
         "claim" => cmd_claim().await,
-        "run" => cmd_run().await,
+        "run" => {
+            update::launch_staged_if_any();
+            cmd_run().await
+        }
         "doctor" => cmd_doctor().await,
+        "update" => update::cmd_update().await,
         other => {
             // Usage error (exit 2), distinct from a runtime failure (exit 1), so
             // a wrapper script can tell "you typed it wrong" from "it broke".

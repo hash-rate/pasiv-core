@@ -73,11 +73,15 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "run",
-        "Run the node: mine, publish live state, obey start/stop from the phone.\n            This is what the systemd unit runs — you rarely type it yourself.",
+        "Run the node: mine, publish live state, obey start/stop/update from the\n            phone. This is what the systemd unit runs — you rarely type it yourself.",
     ),
     (
         "doctor",
         "One health pass — config, miner, pool, fee ledger. Exits non-zero on any\n            failure, so cron and systemd timers can watch it.",
+    ),
+    (
+        "update",
+        "Fetch the latest release, verify its signature, and stage it. The node\n            also does this daily, and when you tap Update in the companion app.",
     ),
     ("version", "Print the version and exit."),
     ("help", "Show this help. `pasivd <command> --help` for one command."),
@@ -193,6 +197,21 @@ pub fn print_command_help(cmd: &str) {
                 dim("# root reads /etc/pasivd.json")
             );
         }
+        "update" => {
+            println!(
+                "{} — install the latest signed release.",
+                bold("pasivd update")
+            );
+            println!();
+            println!("Downloads the newest pasivd, refuses it unless it carries Pasiv's");
+            println!("signature (the same key as every desktop update), and stages it for");
+            println!("the next start. A staged build that never checks in is abandoned after");
+            println!("three starts and the installed one keeps running. The node also checks");
+            println!("once a day, and when you tap Update in the companion app.");
+            println!();
+            println!("{}", bold("USAGE"));
+            println!("  sudo pasivd update && sudo systemctl restart pasivd");
+        }
         _ => print_help(crate::VERSION),
     }
 }
@@ -259,7 +278,7 @@ mod tests {
         // A command listed in COMMANDS but missing from print_command_help would
         // silently fall through to the full help — assert the three real
         // subcommands each have their own page.
-        for cmd in ["claim", "run", "doctor"] {
+        for cmd in ["claim", "run", "doctor", "update"] {
             assert!(
                 COMMANDS.iter().any(|(n, _)| *n == cmd),
                 "{cmd} not in COMMANDS"
