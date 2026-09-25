@@ -94,7 +94,7 @@ pub async fn cmd_doctor() -> Result<(), String> {
         (None, None) => report(
             "WARN",
             "payout",
-            "no payout saved yet — set one in the desktop app's Wallets tab".into(),
+            "no payout cached locally — normal: the node reads it from your account at each start (if it isn't mining, set one in the desktop app's Wallets tab)".into(),
         ),
     }
 
