@@ -48,7 +48,10 @@ exits `2` (usage) and a failure exits `1`, so a wrapper can tell them apart.
 ## Trust model (mirrors the desktop — see [`../docs/FEES.md`](../docs/FEES.md), the binding never-list)
 
 - **Non-custodial** — the pool pays your own address (unMineable converts to
-  USDT and pays daily once past 1.5 USDT); pasivd never holds funds.
+  USDT and pays daily once past 1.5 USDT); pasivd never holds funds. unMineable
+  only pays automatically once an address's "auto pay" is on, and it starts
+  off, so from 0.1.7 the node switches it on for your USDT address (checked
+  daily; it's the same setting as the switch on your unmineable.com address page).
 - **Fee parity** — the same time-sliced 4% (20 s of every 500 s of mining), to the
   same compile-time fee address as the desktop on that route (the BTC treasury
   on unMineable, the Monero fee address direct). A headless node is not a

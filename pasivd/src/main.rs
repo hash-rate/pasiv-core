@@ -685,6 +685,14 @@ async fn cmd_run() -> Result<(), String> {
         // Checked in: whichever build this is, it works.
         update::mark_healthy();
 
+        // unMineable only pays an address automatically once its "auto pay"
+        // is on, and it starts off. Check ~5 min after start, then daily.
+        if tgt.unmineable && tick % 17_280 == 60 {
+            if let Some(addr) = cfg.payout_usdt.as_deref() {
+                ensure_auto_pay(&client, addr).await;
+            }
+        }
+
         // Daily update check (17 280 ticks of 5 s), first one ~10 min after
         // start so a crash-looping node never hammers the release host.
         if tick % 17_280 == 120 {
@@ -694,6 +702,41 @@ async fn cmd_run() -> Result<(), String> {
                 Err(e) => eprintln!("update check failed: {e}"),
             }
         }
+    }
+}
+
+/// Turn on unMineable's daily auto pay for the owner's USDT address if it is
+/// off (it is off for every new address, and off means "press Payout now on
+/// the website"). Needs the address's unMineable id, which exists once the
+/// address has mined; before that this quietly tries again tomorrow.
+async fn ensure_auto_pay(client: &reqwest::Client, address: &str) {
+    use pasiv_core::unmineable::{address_api_url, auto_pay_url, PayoutAsset};
+    let Some(url) = PayoutAsset::usdt_for(address).and_then(|a| address_api_url(a, address)) else {
+        return;
+    };
+    let Ok(resp) = client.get(url).send().await else {
+        return;
+    };
+    let Ok(v) = resp.json::<serde_json::Value>().await else {
+        return;
+    };
+    if v["data"]["auto"].as_bool() != Some(false) {
+        return;
+    }
+    let Some(set) = v["data"]["uuid"].as_str().and_then(auto_pay_url) else {
+        return;
+    };
+    match client
+        .post(set)
+        .json(&serde_json::json!({ "setting": true }))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => {
+            println!("unMineable auto pay turned on (paid daily at 13:00 UTC over the threshold)")
+        }
+        Ok(r) => eprintln!("could not turn on unMineable auto pay: {}", r.status()),
+        Err(e) => eprintln!("could not turn on unMineable auto pay: {e}"),
     }
 }
 

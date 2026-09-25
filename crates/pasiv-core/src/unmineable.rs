@@ -143,6 +143,26 @@ pub fn address_api_url(asset: PayoutAsset, address: &str) -> Option<String> {
     })
 }
 
+/// unMineable pays an address automatically (once a day at 13:00 UTC, over
+/// the threshold) ONLY when that address's "auto pay" setting is on — and it
+/// is OFF for every new address. Off, the owner must press "Payout now" on
+/// unmineable.com each time, which breaks "paid daily from 1.5 USDT". The
+/// setting is per address, keyed by the address's unMineable id (the `uuid` in
+/// the address API, assigned once the address has mined), and is the same
+/// unauthenticated call unmineable.com's own address page makes.
+///
+/// POST this URL with `{"setting": true}`. `None` for anything that isn't a
+/// UUID, so no caller can splice a path into it.
+pub fn auto_pay_url(uuid: &str) -> Option<String> {
+    let u = uuid.trim();
+    let shape = u.len() == 36
+        && u.chars().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    shape.then(|| format!("https://api.unmineable.com/v1/address/{u}/setting/auto_pay"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +223,17 @@ mod tests {
         assert_eq!(worker_name("DESKTOP-AB12CDE"), "DESKTOP_AB12CDE");
         assert_eq!(worker_name("---"), "pasiv");
         assert_eq!(worker_name(&"x".repeat(50)).len(), 32);
+    }
+
+    #[test]
+    fn auto_pay_url_takes_only_a_uuid() {
+        assert_eq!(
+            auto_pay_url("655f9ac0-87d1-4515-b002-fc0304bc8cd6").as_deref(),
+            Some("https://api.unmineable.com/v1/address/655f9ac0-87d1-4515-b002-fc0304bc8cd6/setting/auto_pay")
+        );
+        assert!(auto_pay_url("").is_none());
+        assert!(auto_pay_url("655f9ac0-87d1-4515-b002-fc0304bc8cd").is_none());
+        assert!(auto_pay_url("../../v1/payments?x=1-aaaa-bbbb-cccc-dddddddddddd").is_none());
+        assert!(auto_pay_url("655f9ac0x87d1-4515-b002-fc0304bc8cd6").is_none());
     }
 }
