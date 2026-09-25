@@ -987,11 +987,11 @@ mod hardware_uplink_tests {
         assert_eq!(t.pool, "rx.unmineable.com:3333");
         assert_eq!(
             t.user,
-            "USDT:0x000000000000000000000000000000000000dEaD.rack_1#0ug6-qn2d"
+            "USDT:0x000000000000000000000000000000000000dEaD.rack_1#drp0-8auk"
         );
         assert_eq!(
             t.fee,
-            "USDT:0x10B65cCcDB6a865F0e9f1F77B30cd7718a6BfeeF.rack_1"
+            "BTC:bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90.rack_1"
         );
     }
 

@@ -77,17 +77,20 @@ pub fn fee_fraction(coin: Coin) -> f64 {
 // the user's address, on the same pool and algorithm. The direct-pool route
 // above keeps its XMR-only rule while it remains as a hidden failover.
 
-/// Pasiv's treasury — a plain EVM account (no contract code on BSC, Ethereum or
-/// Arbitrum, checked 2026-09-25). unMineable pays it USDT on BSC. Compile-time
-/// constant for the same reason as `FEE_ADDRESS_XMR`: changing it takes a
-/// signed release and a changelog entry.
-pub const FEE_ADDRESS_TREASURY: &str = "0x10B65cCcDB6a865F0e9f1F77B30cd7718a6BfeeF";
+/// Pasiv's treasury — a Bitcoin SegWit address (bech32 checksum verified by
+/// the test below). unMineable converts the fee slices' hashrate and pays it
+/// in BTC. Compile-time constant for the same reason as `FEE_ADDRESS_XMR`:
+/// changing it takes a signed release and a changelog entry (never-list #3).
+pub const FEE_ADDRESS_TREASURY: &str = "bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90";
+
+/// The asset the treasury is paid in on unMineable.
+pub const FEE_TREASURY_ASSET: &str = "BTC";
 
 /// Pasiv's unMineable referral code, appended to every USER login
-/// (`#0ug6-qn2d`). It lowers the user's unMineable fee from 1% to 0.75% and
+/// (`#drp0-8auk`). It lowers the user's unMineable fee from 1% to 0.75% and
 /// pays Pasiv 0.25% of the user's rewards out of unMineable's own cut —
-/// disclosed alongside the 4% (docs/FEES.md). Tied to FEE_ADDRESS_TREASURY.
-pub const UNMINEABLE_REFERRAL: &str = "0ug6-qn2d";
+/// disclosed alongside the 4% (docs/FEES.md). Issued for the BTC treasury.
+pub const UNMINEABLE_REFERRAL: &str = "drp0-8auk";
 
 /// How a miner is switched to the fee address, which decides the slice shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,11 +118,12 @@ pub fn in_fee_slice_for(kind: SwitchKind, mining_secs: u64) -> bool {
     !FEE_ADDRESS_TREASURY.is_empty() && (mining_secs % window) < slice
 }
 
-/// The fee login on unMineable: the treasury, paid in USDT (BSC), with the
-/// worker kept so slices are visible per rig on the pool's public stats.
+/// The fee login on unMineable: the treasury, paid in BTC, with the worker
+/// kept so slices are visible per rig on the pool's public stats.
 pub fn unmineable_fee_login(worker: &str) -> String {
     format!(
-        "USDT:{}.{}",
+        "{}:{}.{}",
+        FEE_TREASURY_ASSET,
         FEE_ADDRESS_TREASURY,
         crate::unmineable::worker_name(worker)
     )
@@ -391,9 +395,15 @@ mod tests {
     }
 
     #[test]
-    fn treasury_is_a_valid_bsc_address() {
-        assert!(crate::address::is_valid_bsc_address(FEE_ADDRESS_TREASURY));
-        assert_eq!(UNMINEABLE_REFERRAL, "0ug6-qn2d");
+    fn treasury_is_a_checksummed_btc_address() {
+        assert!(crate::address::is_valid_btc_segwit_address(
+            FEE_ADDRESS_TREASURY
+        ));
+        assert_eq!(FEE_TREASURY_ASSET, "BTC");
+        assert_eq!(UNMINEABLE_REFERRAL, "drp0-8auk");
+        // One character off must fail the checksum.
+        let typo = FEE_ADDRESS_TREASURY.replacen('v', "w", 1);
+        assert!(!crate::address::is_valid_btc_segwit_address(&typo));
     }
 
     #[test]
@@ -413,7 +423,7 @@ mod tests {
     fn unmineable_fee_login_pays_the_treasury_in_usdt() {
         assert_eq!(
             unmineable_fee_login("rack 1"),
-            "USDT:0x10B65cCcDB6a865F0e9f1F77B30cd7718a6BfeeF.rack_1"
+            "BTC:bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90.rack_1"
         );
         assert_eq!(fee_fraction_unmineable(), 0.04);
     }

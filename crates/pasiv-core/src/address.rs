@@ -248,8 +248,75 @@ fn base58_decode(s: &str) -> Option<Vec<u8>> {
     Some(v)
 }
 
+/// Bitcoin mainnet SegWit address (`bc1…`): bech32 (witness v0) or bech32m
+/// (v1+, e.g. Taproot), with the checksum VERIFIED — not a shape check. Used
+/// for Pasiv's own treasury constant, which must be provably well-formed:
+/// a typo there would pay a stranger, irreversibly, forever.
+pub fn is_valid_btc_segwit_address(a: &str) -> bool {
+    const CHARSET: &str = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    let lower = a.to_ascii_lowercase();
+    if a != lower && a != a.to_ascii_uppercase() {
+        return false; // mixed case is invalid bech32
+    }
+    let Some(data) = lower.strip_prefix("bc1") else {
+        return false;
+    };
+    if !(14..=74).contains(&lower.len()) {
+        return false;
+    }
+    let Some(vals) = data
+        .chars()
+        .map(|c| CHARSET.find(c).map(|i| i as u32))
+        .collect::<Option<Vec<u32>>>()
+    else {
+        return false;
+    };
+    let mut v: Vec<u32> = "bc".bytes().map(|b| (b >> 5) as u32).collect();
+    v.push(0);
+    v.extend("bc".bytes().map(|b| (b & 31) as u32));
+    v.extend(&vals);
+    let mut chk: u32 = 1;
+    const GEN: [u32; 5] = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    for x in v {
+        let top = chk >> 25;
+        chk = ((chk & 0x1ffffff) << 5) ^ x;
+        for (i, g) in GEN.iter().enumerate() {
+            if (top >> i) & 1 == 1 {
+                chk ^= g;
+            }
+        }
+    }
+    let witness_v = vals[0];
+    match witness_v {
+        0 => chk == 1,               // bech32
+        1..=16 => chk == 0x2bc830a3, // bech32m
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn btc_segwit_checksums_bip173_and_bip350_vectors() {
+        // BIP-173 (bech32, witness v0) and BIP-350 (bech32m, v1 Taproot).
+        assert!(is_valid_btc_segwit_address(
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+        ));
+        assert!(is_valid_btc_segwit_address(
+            "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0"
+        ));
+        // A v1 address checksummed as bech32 (not bech32m) is invalid.
+        assert!(!is_valid_btc_segwit_address(
+            "bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7k7grplx"
+        ));
+        assert!(!is_valid_btc_segwit_address(
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5"
+        ));
+        assert!(!is_valid_btc_segwit_address(
+            "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
+        ));
+    }
+
     use super::*;
 
     /// The four canonical EIP-55 vectors from the EIP itself, plus the address

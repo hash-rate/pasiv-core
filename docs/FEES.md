@@ -75,8 +75,9 @@ The fee is **time-sliced hashrate**, identical in mechanism to XMRig's dev fee
 - For **4% of active mining time**, the miner submits shares to **Pasiv's fee
   address** instead of the user's. The other 96% goes to the user's payout
   address, untouched. On the unMineable route the fee address is Pasiv's
-  treasury, `0x10B65cCcDB6a865F0e9f1F77B30cd7718a6BfeeF`, paid in USDT on BNB
-  Smart Chain by the same pool ([`FEE_ADDRESS_TREASURY`](../crates/pasiv-core/src/fee.rs)).
+  treasury, `bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90`, paid in BTC by the
+  same pool — publicly checkable at
+  <https://unmineable.com/address/bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90?coin=BTC> ([`FEE_ADDRESS_TREASURY`](../crates/pasiv-core/src/fee.rs)).
 - **The slice shape depends on how the miner can switch.** The CPU miner
   (XMRig) re-logs-in live, so its slice is 20 s in every 500 s. The GPU miner
   (SRBMiner) can only switch by restarting, measured at ~19 s from restart to
@@ -124,7 +125,9 @@ The fee is **time-sliced hashrate**, identical in mechanism to XMRig's dev fee
 In the desktop app (Pro → Fees), always visible:
 
 - Running total contributed, all-time.
-- The exact **fee address** (Monero, the only coin with a Pasiv fee), with a
+- The exact **fee address** — the BTC treasury on the USDT route, the Monero
+  address on the direct route (where Monero is the only coin with a Pasiv
+  fee) — with a
   "check it on the pool ↗" link — so anyone can confirm on the mining pool
   that the numbers match. (Monero is a private chain: a block explorer shows
   nothing for any address, so verification is pool-side, not on-chain.)
