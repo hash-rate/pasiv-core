@@ -131,6 +131,131 @@ fn detect_gpus() -> Vec<GpuInfo> {
 
 #[cfg(not(target_os = "macos"))]
 fn detect_gpus() -> Vec<GpuInfo> {
+    let mut gpus = detect_nvidia();
+    gpus.extend(detect_amd());
+    gpus
+}
+
+/// AMD Radeon eligibility for Pearl (pearlhash via SRBMiner-Multi, which runs
+/// it on RDNA2 and newer — docs/spikes/AMD-phase0.md): an RX 6000/7000/9000
+/// card with at least 4 GB. Older GCN/Polaris/RDNA1 cards are listed (so the
+/// UI can say why) but not eligible. Pure, unit-tested on every platform.
+pub fn amd_eligible(name: &str, vram_mb: u64) -> bool {
+    let n = name.to_ascii_uppercase();
+    let rdna2_plus = ["RX 6", "RX 7", "RX 9"].iter().any(|p| {
+        n.find(p).is_some_and(|i| {
+            n[i + p.len() - 1..]
+                .chars()
+                .take(4)
+                .all(|c| c.is_ascii_digit())
+        })
+    });
+    rdna2_plus && vram_mb >= 4096
+}
+
+/// Parse the Windows display-adapter registry dump written by `detect_amd`:
+/// one `DriverDesc|qwMemorySize` line per adapter. Registry, not WMI:
+/// Win32_VideoController.AdapterRAM is a uint32 and reports every card over
+/// 4 GB as 4 GB, which would misjudge exactly the cards that matter.
+#[allow(dead_code)] // used on Windows; unit-tested everywhere
+fn parse_amd_registry(out: &str) -> Vec<GpuInfo> {
+    out.lines()
+        .filter_map(|l| {
+            let (name, bytes) = l.trim().rsplit_once('|')?;
+            let name = name.trim();
+            if !(name.contains("AMD") || name.contains("Radeon")) {
+                return None;
+            }
+            let vram_mb = bytes.trim().parse::<u64>().ok()? / (1024 * 1024);
+            Some(GpuInfo {
+                name: name.to_string(),
+                vram_mb,
+                eligible: amd_eligible(name, vram_mb),
+            })
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn detect_amd() -> Vec<GpuInfo> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let script = "Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0*' -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -match 'Advanced Micro|AMD|ATI' } | ForEach-Object { \"$($_.DriverDesc)|$($_.'HardwareInformation.qwMemorySize')\" }";
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => parse_amd_registry(&String::from_utf8_lossy(&o.stdout)),
+        _ => Vec::new(),
+    }
+}
+
+/// Linux: amdgpu exposes vendor + VRAM in sysfs; the marketing name comes from
+/// `lspci -mm` for the card's PCI slot (falls back to a generic name).
+#[cfg(target_os = "linux")]
+fn detect_amd() -> Vec<GpuInfo> {
+    let mut gpus = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
+        return gpus;
+    };
+    for e in entries.flatten() {
+        let fname = e.file_name().to_string_lossy().to_string();
+        if !fname.starts_with("card") || fname.contains('-') {
+            continue;
+        }
+        let dev = e.path().join("device");
+        let vendor = std::fs::read_to_string(dev.join("vendor")).unwrap_or_default();
+        if vendor.trim() != "0x1002" {
+            continue;
+        }
+        let vram_mb = std::fs::read_to_string(dev.join("mem_info_vram_total"))
+            .ok()
+            .and_then(|b| b.trim().parse::<u64>().ok())
+            .map(|b| b / (1024 * 1024))
+            .unwrap_or(0);
+        let slot = std::fs::canonicalize(&dev)
+            .ok()
+            .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
+            .unwrap_or_default();
+        let name = std::process::Command::new("lspci")
+            .args(["-mm", "-s", &slot])
+            .output()
+            .ok()
+            .and_then(|o| parse_lspci_mm_name(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_else(|| "AMD Radeon GPU".to_string());
+        gpus.push(GpuInfo {
+            eligible: amd_eligible(&name, vram_mb),
+            name,
+            vram_mb,
+        });
+    }
+    gpus
+}
+
+/// `lspci -mm` quotes its fields: slot "class" "vendor" "device" …; the device
+/// field carries the marketing name, often with the chip in brackets:
+/// `Navi 22 [Radeon RX 6700/6700 XT/6750 XT / 6800M/6850M XT]`.
+#[allow(dead_code)] // used on Linux; unit-tested everywhere
+fn parse_lspci_mm_name(out: &str) -> Option<String> {
+    let line = out.lines().next()?;
+    let fields: Vec<&str> = line.split('"').filter(|f| !f.trim().is_empty()).collect();
+    let device = fields.get(3)?.trim();
+    let inner = device
+        .split_once('[')
+        .and_then(|(_, r)| r.split_once(']'))
+        .map(|(i, _)| i)
+        .unwrap_or(device);
+    Some(format!("AMD {}", inner.trim()))
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn detect_amd() -> Vec<GpuInfo> {
+    Vec::new()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn detect_nvidia() -> Vec<GpuInfo> {
     // Minimal probe until nvml-wrapper lands with real M3: name + VRAM.
     let mut cmd = std::process::Command::new("nvidia-smi");
     cmd.args([
@@ -322,6 +447,37 @@ fn l3_bytes() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn amd_rdna2_and_newer_with_4gb_are_eligible() {
+        assert!(amd_eligible("AMD Radeon RX 6700 XT", 12288));
+        assert!(amd_eligible("AMD Radeon RX 7800 XT", 16384));
+        assert!(amd_eligible("AMD Radeon RX 9070", 16384));
+        assert!(amd_eligible("AMD Radeon RX 6500 XT", 4096));
+        assert!(!amd_eligible("AMD Radeon RX 6400", 2048)); // too little VRAM
+        assert!(!amd_eligible("AMD Radeon RX 580", 8192)); // Polaris
+        assert!(!amd_eligible("AMD Radeon RX 5700 XT", 8192)); // RDNA1
+        assert!(!amd_eligible("AMD Radeon(TM) Graphics", 512)); // iGPU
+    }
+
+    #[test]
+    fn windows_registry_reports_true_vram_over_4gb() {
+        let out = "AMD Radeon RX 6700 XT|12868124672\r\nAMD Radeon(TM) Graphics|536870912\r\nNVIDIA GeForce RTX 4060|8589934592\r\n";
+        let g = parse_amd_registry(out);
+        assert_eq!(g.len(), 2, "NVIDIA lines are the nvidia-smi probe's job");
+        assert_eq!(g[0].name, "AMD Radeon RX 6700 XT");
+        assert_eq!(g[0].vram_mb, 12272);
+        assert!(g[0].eligible);
+        assert!(!g[1].eligible);
+    }
+
+    #[test]
+    fn lspci_mm_name_takes_the_marketing_name() {
+        let out = "03:00.0 \"VGA compatible controller\" \"Advanced Micro Devices, Inc. [AMD/ATI]\" \"Navi 22 [Radeon RX 6700/6700 XT/6750 XT / 6800M/6850M XT]\" -rc1 \"Sapphire\" \"Device 2406\"";
+        let name = parse_lspci_mm_name(out).unwrap();
+        assert_eq!(name, "AMD Radeon RX 6700/6700 XT/6750 XT / 6800M/6850M XT");
+        assert!(amd_eligible(&name, 12288));
+    }
+
     use super::*;
 
     /// The VRAM figure that feeds the per-coin gate comes from these fixtures —
