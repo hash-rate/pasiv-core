@@ -123,6 +123,20 @@ pub(crate) struct MiningTarget {
     pub user: String,
     /// The fee slice's login: the treasury on unMineable, FEE_ADDRESS_XMR direct.
     pub fee: String,
+    /// On the unMineable route — decides what the fee ledger records.
+    pub unmineable: bool,
+}
+
+impl MiningTarget {
+    /// A fresh fee scheduler whose ledger records where this node's slices
+    /// really go (the treasury on unMineable, the XMR fee address direct).
+    fn scheduler(&self) -> SliceScheduler {
+        if self.unmineable {
+            SliceScheduler::for_unmineable(pasiv_core::types::Coin::Xmr)
+        } else {
+            SliceScheduler::new()
+        }
+    }
 }
 
 /// The route rule, pure so it is tested: a valid USDT address on the account
@@ -137,6 +151,7 @@ pub(crate) fn target(usdt: Option<&str>, xmr: Option<&str>, host: &str) -> Optio
                     pool: format!("{}:{}", Algo::RandomX.host(), Algo::PORT),
                     user,
                     fee: fee::unmineable_fee_login(host),
+                    unmineable: true,
                 });
             }
         }
@@ -146,6 +161,7 @@ pub(crate) fn target(usdt: Option<&str>, xmr: Option<&str>, host: &str) -> Optio
             pool: pool(),
             user: a.to_string(),
             fee: FEE_ADDRESS_XMR.to_string(),
+            unmineable: false,
         })
 }
 
@@ -451,7 +467,7 @@ async fn cmd_run() -> Result<(), String> {
     let mut mining_secs: u64 = 0;
     // The shared enforcement state machine — fresh per spawn (a respawned
     // miner always comes up on the user's address).
-    let mut sched = SliceScheduler::new();
+    let mut sched = tgt.scheduler();
     let mut tick: u64 = 0;
     let mut last_hashrate = 0.0_f64;
     let mut accepted: u64 = 0;
@@ -509,7 +525,7 @@ async fn cmd_run() -> Result<(), String> {
                             tgt.pool,
                             tgt.user.chars().take(16).collect::<String>()
                         );
-                        sched = SliceScheduler::new();
+                        sched = tgt.scheduler();
                         miner = Some(Miner { child, token });
                     }
                     Err(e) => eprintln!("{e}"),
@@ -764,6 +780,7 @@ mod tests {
             pool: pool(),
             user: "4user".into(),
             fee: FEE_ADDRESS_XMR.into(),
+            unmineable: false,
         };
         assert_eq!(
             side_address(PayoutSide::Fee, &direct),

@@ -246,16 +246,44 @@ pub enum SwapFailure {
 /// Pure fee-slice enforcement state. One instance per miner run; create a
 /// fresh one on every (re)spawn — a respawned miner is always on the user's
 /// address.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SliceScheduler {
     on_fee: bool,
     slice_started_at: Option<u64>,
     failed_returns: u32,
+    /// Where this scheduler's fee slices actually mine — what the ledger
+    /// records. The direct route's Monero fee address by default; the
+    /// unMineable route's treasury via `for_unmineable`.
+    fee_coin: Coin,
+    fee_address: &'static str,
+}
+
+impl Default for SliceScheduler {
+    fn default() -> Self {
+        Self {
+            on_fee: false,
+            slice_started_at: None,
+            failed_returns: 0,
+            fee_coin: Coin::Xmr,
+            fee_address: FEE_ADDRESS_XMR,
+        }
+    }
 }
 
 impl SliceScheduler {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A scheduler for the unMineable route: the ledger records the coin being
+    /// mined and the treasury the slice really paid, not the direct route's
+    /// Monero fee address (the ledger must say where hashes went).
+    pub fn for_unmineable(coin: Coin) -> Self {
+        Self {
+            fee_coin: coin,
+            fee_address: FEE_ADDRESS_TREASURY,
+            ..Self::default()
+        }
     }
 
     /// The side the miner must be pointed at right now: the fee address only
@@ -323,8 +351,8 @@ impl SliceScheduler {
                 Some(FeeEvent {
                     started_at: start,
                     ended_at: now_unix,
-                    coin: Coin::Xmr,
-                    address: FEE_ADDRESS_XMR.to_string(),
+                    coin: self.fee_coin,
+                    address: self.fee_address.to_string(),
                     est_hashes: (last_hashrate * secs as f64) as u64,
                 })
             }
@@ -382,6 +410,23 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].est_hashes, 12_345);
         assert_eq!(parsed[1].ended_at - parsed[1].started_at, 5);
+    }
+
+    #[test]
+    fn the_ledger_names_the_address_the_slice_really_paid() {
+        let mut direct = SliceScheduler::new();
+        direct.confirmed(PayoutSide::Fee, 100, 10.0);
+        let ev = direct.confirmed(PayoutSide::User, 120, 10.0).unwrap();
+        assert_eq!((ev.coin, ev.address.as_str()), (Coin::Xmr, FEE_ADDRESS_XMR));
+
+        let mut usdt = SliceScheduler::for_unmineable(Coin::Prl);
+        usdt.confirmed(PayoutSide::Fee, 100, 10.0);
+        let ev = usdt.confirmed(PayoutSide::User, 700, 10.0).unwrap();
+        assert_eq!(
+            (ev.coin, ev.address.as_str()),
+            (Coin::Prl, FEE_ADDRESS_TREASURY)
+        );
+        assert_eq!(ev.est_hashes, 6000);
     }
 
     #[test]
