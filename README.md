@@ -10,7 +10,8 @@ and pinned by tests:
 
 | What | Where | Why it's here |
 |---|---|---|
-| The 4% fee engine | [`crates/pasiv-core/src/fee.rs`](crates/pasiv-core/src/fee.rs) | The compile-time fee address, the structural time-slice schedule (`(mining_secs % 500) < 20` — exactly 4%, only in the `Mining` state), and the append-only ledger every slice is written to |
+| The 4% fee engine | [`crates/pasiv-core/src/fee.rs`](crates/pasiv-core/src/fee.rs) | The compile-time fee addresses (the treasury for the USDT route, the XMR address for the direct route), the structural time-slice schedules (20 s in 500 s for a live-switching miner, 10 min in 4 h 10 min for one that must restart — exactly 4% either way, only in the `Mining` state), and the append-only ledger every slice is written to |
+| The USDT payout route | [`crates/pasiv-core/src/unmineable.rs`](crates/pasiv-core/src/unmineable.rs) | The default from 0.5.0: the unMineable login (`USDT:<your address>.<worker>#<referral>`), the BSC/TRON address rules (TRON checksum verified), and the pool hosts — the pool pays *your* address; Pasiv never holds funds |
 | The coin/pool roster | [`crates/pasiv-core/src/coins.rs`](crates/pasiv-core/src/coins.rs) | Exactly where hashes are submitted for every supported coin — pools, ports, algorithms |
 | Payout validators | [`crates/pasiv-core/src/address.rs`](crates/pasiv-core/src/address.rs) | The paste-time rules for every coin's payout address |
 | The mining state machine | [`crates/pasiv-core/src/state.rs`](crates/pasiv-core/src/state.rs) | Drives both the UI and the fee counter — "never charge a paused user" is structural, not promised |
