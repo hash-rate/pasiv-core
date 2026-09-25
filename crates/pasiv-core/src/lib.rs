@@ -37,6 +37,7 @@ pub mod hardware;
 pub mod profit;
 pub mod state;
 pub mod types;
+pub mod unmineable;
 #[cfg(target_os = "macos")]
 pub mod verus;
 pub mod xmrig;

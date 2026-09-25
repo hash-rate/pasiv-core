@@ -199,6 +199,55 @@ fn eip55(hex: &str) -> String {
         .collect()
 }
 
+/// USDT on BNB Smart Chain (BEP20) — a plain EVM `0x` address. Same rule as
+/// ETC (EIP-55 enforced only when mixed case is present): one key controls
+/// the same address on every EVM chain, which is why a wallet connected over
+/// WalletConnect can be paid USDT on BSC without switching networks.
+pub fn is_valid_bsc_address(a: &str) -> bool {
+    is_valid_etc_address(a)
+}
+
+/// TRON (TRC20) address: base58check, 25 bytes decoded, version byte 0x41,
+/// last 4 bytes = first 4 of sha256(sha256(first 21)). Checked in full —
+/// not just the `T…` shape — because the payout pool cannot change an address
+/// once mining has started: a typo that passed a shape check would pay a
+/// stranger, irreversibly.
+pub fn is_valid_tron_address(a: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    if !(a.len() == 34 && a.starts_with('T')) {
+        return false;
+    }
+    let Some(raw) = base58_decode(a) else {
+        return false;
+    };
+    if raw.len() != 25 || raw[0] != 0x41 {
+        return false;
+    }
+    let check = Sha256::digest(Sha256::digest(&raw[..21]));
+    check[..4] == raw[21..]
+}
+
+fn base58_decode(s: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut out: Vec<u8> = Vec::new();
+    for c in s.bytes() {
+        let mut carry = ALPHABET.iter().position(|&x| x == c)? as u32;
+        for b in out.iter_mut().rev() {
+            carry += (*b as u32) * 58;
+            *b = (carry & 0xff) as u8;
+            carry >>= 8;
+        }
+        while carry > 0 {
+            out.insert(0, (carry & 0xff) as u8);
+            carry >>= 8;
+        }
+    }
+    let zeros = s.bytes().take_while(|&c| c == b'1').count();
+    let mut v = vec![0u8; zeros];
+    v.extend(out);
+    Some(v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
