@@ -8,6 +8,24 @@ Pasiv makes money **only when you do.** The mechanics below are documented in
 full — and, since this repository exists, implemented in the open — so anyone
 can see exactly what they pay and confirm it against the app's own fee ledger.
 
+> **Revision 2026-09-25 (Pasiv 0.5.0).** Changed, in the open, as never-list
+> item 3 requires:
+> 1. **Payouts in USDT by default, via unMineable.** New installs mine on
+>    unMineable's pool, which converts what you mine to USDT and pays **your
+>    own address** once a day from 1.5 USDT. Pasiv still never holds funds.
+>    Installs already paying a coin address directly keep that route until
+>    their owner switches — nobody is moved.
+> 2. **The 4% now applies to every coin on the unMineable route** (it was
+>    Monero-only). On the direct route it stays Monero-only.
+> 3. **unMineable's own 0.75% fee is listed below,** and so is Pasiv's
+>    referral: unMineable pays Pasiv 0.25% of your mining **out of its own
+>    fee** — it does not come out of your earnings.
+> 4. **Signed-in users are identified in analytics by an opaque id**
+>    (never-list item 4 revised). Anonymous users stay anonymous.
+>
+> <!-- PENDING before publishing: Pearl-on-unMineable confirmed by the 48 h rack
+> earnings test (2026-09-25). If Pearl stays direct, item 2 reads "Monero". -->
+
 ---
 
 ## 1. What Pasiv charges
@@ -20,9 +38,11 @@ can see exactly what they pay and confirm it against the app's own fee ledger.
 
 That is the whole of it. No ads, no subscription on the free tier, no cut of
 your payouts beyond the 4%. Paused or idle time is charged at zero, and the
-app's own ledger shows every slice. The fee applies to **Monero only** — every
-other coin in the roster carries no Pasiv fee at all
-([`fee_fraction`](../crates/pasiv-core/src/fee.rs)).
+app's own ledger shows every slice. **On the unMineable route (the default from
+0.5.0) the fee applies to every coin you mine**
+([`fee_fraction_unmineable`](../crates/pasiv-core/src/fee.rs)); on the direct
+route, which installs from before 0.5.0 keep until they switch, it applies to
+**Monero only** ([`fee_fraction`](../crates/pasiv-core/src/fee.rs)).
 
 ### Other fees, which are not ours
 
@@ -32,7 +52,10 @@ discover.
 
 | | Amount | Taken by | |
 |---|---|---|---|
-| Pool fee | ~1% | Your chosen pool (MoneroOcean, HeroMiners, …) | Per that pool's own published terms |
+| unMineable pool fee | 0.75% | unMineable (the default route) | 1%, lowered to 0.75% by Pasiv's referral code in your login |
+| Pasiv's referral | 0.25% | Paid **to Pasiv by unMineable, out of unMineable's own fee** | Not taken from your earnings; disclosed because Pasiv benefits |
+| Pool fee (direct route) | ~1% | Your chosen pool (MoneroOcean, LuckyPool, …) | Per that pool's own published terms |
+| SRBMiner dev fee | 2% | The SRBMiner-Multi developers | Built into the GPU mining engine (Pearl) |
 | XMRig dev donation | 1% | The XMRig developers | Built into the mining engine Pasiv drives |
 
 **On XMRig's 1%.** Pasiv runs the *stock, official* XMRig binary — fetched from
@@ -54,7 +77,15 @@ The fee is **time-sliced hashrate**, identical in mechanism to XMRig's dev fee
 
 - For **4% of active mining time**, the miner submits shares to **Pasiv's fee
   address** instead of the user's. The other 96% goes to the user's payout
-  address, untouched.
+  address, untouched. On the unMineable route the fee address is Pasiv's
+  treasury, `0x10B65cCcDB6a865F0e9f1F77B30cd7718a6BfeeF`, paid in USDT on BNB
+  Smart Chain by the same pool ([`FEE_ADDRESS_TREASURY`](../crates/pasiv-core/src/fee.rs)).
+- **The slice shape depends on how the miner can switch.** The CPU miner
+  (XMRig) re-logs-in live, so its slice is 20 s in every 500 s. The GPU miner
+  (SRBMiner) can only switch by restarting, measured at ~19 s from restart to
+  hashing, so its slice is 10 minutes in every 4 h 10 min: the same 4%, with
+  warm-up costing you under 0.3% instead of most of a short slice
+  ([`slice_shape`](../crates/pasiv-core/src/fee.rs)).
 - The slice accrues **only in the `Mining` state.** `Idle`, `Paused`,
   `Starting`, and `Error` contribute **zero** fee time. This is the fairness
   guarantee, enforced in code: the fee counter is driven by the same state
@@ -120,19 +151,24 @@ Pasiv will **not**, in any build:
 3. Change the Pasiv fee percentage or fee address **without a versioned
    changelog entry and a new signed release.** (Both are compile-time
    constants in this repository.)
-4. Collect telemetry that is identifying, undisclosed, or that you cannot switch
-   off. Product analytics are **anonymous by construction** — Pasiv never calls
-   `identify()`, so there is no profile to join anything to — every event is
+4. Collect telemetry that is undisclosed, that you cannot switch off, or that
+   identifies anyone who hasn't signed in. Product analytics are anonymous for
+   everyone without an account. A user who **signs in** is identified by an
+   opaque id — the first 32 hex of sha256 of their account id — so their own
+   desktop, phone and site events join up; never by a wallet or payout
+   address, which are never sent to analytics from anywhere. Every event is
    listed in `docs/ANALYTICS.md`, and one toggle in Settings stops collection
-   entirely (an opted-out install makes no request at all). Wallet and payout
-   addresses are never sent, from anywhere.
+   entirely (an opted-out install makes no request at all). *(Revised
+   2026-09-25; until then Pasiv never called `identify()` at all.)*
 5. Charge fee time in any state other than `Mining`.
 6. Hide how the fee works — the exact mechanism is this file plus the code
    beside it, and every slice is shown in the app's fee ledger.
 7. Hold, route, or touch user funds. Payouts are non-custodial: the pool pays
-   the address the user entered, and Pasiv earns its keep through signing,
-   updates, and support — never by holding your coins, your account, or your
-   data.
+   the address the user entered — on the default route unMineable converts to
+   USDT and pays it daily once past 1.5 USDT, holding the balance until then
+   exactly as any pool does — and Pasiv earns its keep through its fee, the
+   disclosed referral, signing, updates and support — never by holding your
+   coins, your account, or your data.
 8. Accept a remote instruction beyond **start, stop, and update** — and an
    update installs only a release Pasiv signed. Nothing sent from the phone
    or the cloud can change which coin a machine mines, its pool, or its
