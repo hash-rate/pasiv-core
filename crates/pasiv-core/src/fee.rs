@@ -260,6 +260,21 @@ impl SliceScheduler {
         }
     }
 
+    /// `desired` on the unMineable route: 4% on every coin, with the slice
+    /// shape for how this miner switches (live re-login vs restart).
+    pub fn desired_for(
+        &self,
+        kind: SwitchKind,
+        actively_mining: bool,
+        mining_secs: u64,
+    ) -> PayoutSide {
+        if actively_mining && in_fee_slice_for(kind, mining_secs) {
+            PayoutSide::Fee
+        } else {
+            PayoutSide::User
+        }
+    }
+
     /// The side this scheduler currently believes the miner is on.
     pub fn current(&self) -> PayoutSide {
         if self.on_fee {
@@ -355,6 +370,24 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].est_hashes, 12_345);
         assert_eq!(parsed[1].ended_at - parsed[1].started_at, 5);
+    }
+
+    #[test]
+    fn desired_for_never_charges_when_not_mining() {
+        let s = SliceScheduler::new();
+        assert_eq!(
+            s.desired_for(SwitchKind::Restart, false, 0),
+            PayoutSide::User
+        );
+        assert_eq!(s.desired_for(SwitchKind::Restart, true, 0), PayoutSide::Fee);
+        assert_eq!(
+            s.desired_for(SwitchKind::Restart, true, 600),
+            PayoutSide::User
+        );
+        assert_eq!(
+            s.desired_for(SwitchKind::HotSwap, true, 20),
+            PayoutSide::User
+        );
     }
 
     #[test]
