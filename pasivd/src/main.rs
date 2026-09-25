@@ -499,7 +499,7 @@ async fn cmd_run() -> Result<(), String> {
         .unwrap_or_else(|_| reqwest::Client::new());
     let mut rate_per_kh: Option<f64> = None;
 
-    println!("{VERSION} — node {} → {}", hostname(), pool());
+    println!("{VERSION} — node {} → {}", hostname(), tgt.pool);
 
     loop {
         tokio::time::sleep(Duration::from_secs(5)).await;
