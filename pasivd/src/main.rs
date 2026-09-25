@@ -103,6 +103,45 @@ pub(crate) struct DeviceConfig {
     secret: String,
     #[serde(default)]
     payout_xmr: Option<String>,
+    /// USDT payout (unMineable route) from the owner's account, when they
+    /// chose it in the desktop app. Preferred over payout_xmr — see `target`.
+    #[serde(default)]
+    payout_usdt: Option<String>,
+}
+
+/// Where this node mines and who each fee side pays.
+#[derive(Debug, PartialEq)]
+pub(crate) struct MiningTarget {
+    pub pool: String,
+    /// The owner's login: `USDT:<addr>.<host>#<referral>` on unMineable, or
+    /// the bare XMR address on the direct pool.
+    pub user: String,
+    /// The fee slice's login: the treasury on unMineable, FEE_ADDRESS_XMR direct.
+    pub fee: String,
+}
+
+/// The route rule, pure so it is tested: a valid USDT address on the account
+/// means the owner chose unMineable (the desktop publishes it only then);
+/// otherwise the direct Monero pool with the XMR address, exactly as before.
+pub(crate) fn target(usdt: Option<&str>, xmr: Option<&str>, host: &str) -> Option<MiningTarget> {
+    use pasiv_core::unmineable::{login, Algo, PayoutAsset};
+    if let Some(addr) = usdt.map(str::trim) {
+        if let Some(asset) = PayoutAsset::usdt_for(addr) {
+            if let Some(user) = login(asset, addr, host, fee::UNMINEABLE_REFERRAL) {
+                return Some(MiningTarget {
+                    pool: format!("{}:{}", Algo::RandomX.host(), Algo::PORT),
+                    user,
+                    fee: fee::unmineable_fee_login(host),
+                });
+            }
+        }
+    }
+    xmr.filter(|a| is_valid_xmr_address(a))
+        .map(|a| MiningTarget {
+            pool: pool(),
+            user: a.to_string(),
+            fee: FEE_ADDRESS_XMR.to_string(),
+        })
 }
 
 pub(crate) fn config_path() -> PathBuf {
@@ -196,10 +235,12 @@ async fn cmd_claim() -> Result<(), String> {
         .await?;
         if v["status"] == "claimed" {
             let payout = v["payout_xmr"].as_str().map(|s| s.to_string());
+            let payout_usdt = v["payout_usdt"].as_str().map(|s| s.to_string());
             let cfg = DeviceConfig {
                 device_id,
                 secret,
                 payout_xmr: payout.clone(),
+                payout_usdt: payout_usdt.clone(),
             };
             let path = config_path();
             if let Some(parent) = path.parent() {
@@ -213,7 +254,7 @@ async fn cmd_claim() -> Result<(), String> {
                 ui::bold("Claimed"),
                 ui::dim(&path.display().to_string())
             );
-            if payout.is_none() {
+            if payout.is_none() && payout_usdt.is_none() {
                 println!(
                     "  {} No XMR payout on your account yet. Set one in the Pasiv desktop",
                     ui::warn_mark()
@@ -270,10 +311,10 @@ fn confirm_side(sched: &mut SliceScheduler, side: PayoutSide, last_hashrate: f64
 /// Which address a payout side means. Pure so the fee path is testable: the
 /// Fee side is exactly the shared crate's compile-time fee address; the User
 /// side is the owner's payout.
-fn side_address(side: PayoutSide, payout: &str) -> &str {
+fn side_address(side: PayoutSide, t: &MiningTarget) -> &str {
     match side {
-        PayoutSide::Fee => FEE_ADDRESS_XMR,
-        PayoutSide::User => payout,
+        PayoutSide::Fee => &t.fee,
+        PayoutSide::User => &t.user,
     }
 }
 
@@ -377,15 +418,27 @@ async fn cmd_run() -> Result<(), String> {
         if v["status"] != "claimed" {
             return Err(format!("device not claimed (status: {})", v["status"]));
         }
-        if let Some(p) = v["payout_xmr"].as_str().filter(|p| is_valid_xmr_address(p)) {
-            cfg.payout_xmr = Some(p.to_string());
+        cfg.payout_xmr = v["payout_xmr"].as_str().map(str::to_string);
+        cfg.payout_usdt = v["payout_usdt"].as_str().map(str::to_string);
+        if target(
+            cfg.payout_usdt.as_deref(),
+            cfg.payout_xmr.as_deref(),
+            &hostname(),
+        )
+        .is_some()
+        {
             let _ = write_config(&path, &cfg);
             break;
         }
-        eprintln!("no XMR payout on the account yet — set one in the Pasiv app; retrying in 60s");
+        eprintln!("no payout on the account yet — set one in the Pasiv app; retrying in 60s");
         tokio::time::sleep(Duration::from_secs(60)).await;
     }
-    let payout = cfg.payout_xmr.clone().unwrap();
+    let tgt = target(
+        cfg.payout_usdt.as_deref(),
+        cfg.payout_xmr.as_deref(),
+        &hostname(),
+    )
+    .expect("checked in the loop above");
     let bin = ensure_xmrig(&client).await?;
 
     let mut miner: Option<Miner> = None;
@@ -444,11 +497,12 @@ async fn cmd_run() -> Result<(), String> {
                         .map(|_| format!("{:x}", r.gen_range(0..16)))
                         .collect()
                 };
-                match spawn_xmrig(&bin, &payout, &token) {
+                match spawn_xmrig(&bin, &tgt.pool, &tgt.user, &token) {
                     Ok(child) => {
                         println!(
-                            "miner started (payout {}…)",
-                            payout.chars().take(12).collect::<String>()
+                            "miner started ({} → {}…)",
+                            tgt.pool,
+                            tgt.user.chars().take(16).collect::<String>()
                         );
                         sched = SliceScheduler::new();
                         miner = Some(Miner { child, token });
@@ -501,7 +555,7 @@ async fn cmd_run() -> Result<(), String> {
             //
             // Now:every tick, ask xmrig where it is actually mining and correct it.
             let want = sched.desired(last_hashrate > 0.0, mining_secs);
-            let target = side_address(want, &payout);
+            let target = side_address(want, &tgt);
             match xmrig_current_user(&client, &m.token).await {
                 Some(actual) if actual == target => {
                     confirm_side(&mut sched, want, last_hashrate);
@@ -701,11 +755,16 @@ mod tests {
     /// payout, and the constant itself is a mineable address.
     #[test]
     fn fee_target_is_the_shared_crate_address_inside_a_slice() {
+        let direct = MiningTarget {
+            pool: pool(),
+            user: "4user".into(),
+            fee: FEE_ADDRESS_XMR.into(),
+        };
         assert_eq!(
-            side_address(PayoutSide::Fee, "4user"),
+            side_address(PayoutSide::Fee, &direct),
             pasiv_core::fee::FEE_ADDRESS_XMR
         );
-        assert_eq!(side_address(PayoutSide::User, "4user"), "4user");
+        assert_eq!(side_address(PayoutSide::User, &direct), "4user");
         // And the fee address must itself be a valid payout, or the node can't
         // even mine its own slice.
         assert!(is_valid_xmr_address(FEE_ADDRESS_XMR));
@@ -775,7 +834,7 @@ mod tests {
     #[test]
     fn the_api_token_never_reaches_the_command_line() {
         let _g = ENV_LOCK.lock().unwrap(); // xmrig_args reads pool()
-        let args = xmrig::xmrig_args("4payoutaddr", "/tmp/xmrig-runtime.json");
+        let args = xmrig::xmrig_args(&pool(), "4payoutaddr", "/tmp/xmrig-runtime.json");
         assert!(
             args.iter()
                 .all(|a| !a.contains("tok123") && a != "--http-access-token"),
@@ -803,6 +862,7 @@ mod tests {
             device_id: "dev-1".into(),
             secret: "s3cret".into(),
             payout_xmr: Some("4addr".into()),
+            payout_usdt: None,
         };
         write_config(&tmp, &cfg).unwrap();
         #[cfg(unix)]
@@ -891,6 +951,7 @@ mod tests {
 
 #[cfg(test)]
 mod hardware_uplink_tests {
+    use super::{pool, target, FEE_ADDRESS_XMR};
     /// pasivd sends `serde_json::to_value(hardware::detect())` in its rig row,
     /// and the mobile companion reads exactly these keys off it (see
     /// pasiv-mobile Rig.fromRow: cpu_model, cpu_cores, usable_threads). This is
@@ -913,5 +974,35 @@ mod hardware_uplink_tests {
             "cpu_cores must be a positive integer, got {}",
             obj["cpu_cores"]
         );
+    }
+
+    #[test]
+    fn a_usdt_account_mines_on_unmineable_with_the_treasury_fee() {
+        let t = target(
+            Some("0x000000000000000000000000000000000000dEaD"),
+            Some(FEE_ADDRESS_XMR),
+            "rack-1",
+        )
+        .unwrap();
+        assert_eq!(t.pool, "rx.unmineable.com:3333");
+        assert_eq!(
+            t.user,
+            "USDT:0x000000000000000000000000000000000000dEaD.rack_1#0ug6-qn2d"
+        );
+        assert_eq!(
+            t.fee,
+            "USDT:0x10B65cCcDB6a865F0e9f1F77B30cd7718a6BfeeF.rack_1"
+        );
+    }
+
+    #[test]
+    fn no_usdt_keeps_the_direct_monero_pool() {
+        let t = target(None, Some(FEE_ADDRESS_XMR), "rack").unwrap();
+        assert_eq!(t.pool, pool());
+        assert_eq!(t.fee, FEE_ADDRESS_XMR);
+        // An invalid USDT address never moves a node off its working route.
+        let t2 = target(Some("0x12"), Some(FEE_ADDRESS_XMR), "rack").unwrap();
+        assert_eq!(t2.pool, pool());
+        assert!(target(None, None, "rack").is_none());
     }
 }

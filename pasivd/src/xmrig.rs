@@ -3,9 +3,7 @@
 //! contract in `pasiv_core::xmrig` (which owns every decision — URLs, the
 //! http block, parsers). Split from main.rs 2026-08-26; behaviour unchanged.
 
-use crate::{
-    data_dir, pool, HTTP_PORT, XMRIG_BIN_SHA256, XMRIG_DIR_IN_TAR, XMRIG_SHA256, XMRIG_URL,
-};
+use crate::{data_dir, HTTP_PORT, XMRIG_BIN_SHA256, XMRIG_DIR_IN_TAR, XMRIG_SHA256, XMRIG_URL};
 use sha2::Digest;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -93,12 +91,12 @@ pub struct Miner {
 /// purpose: a missing flag here fails silently at runtime, not at build. Only
 /// the pool, the payout, and the runtime-config path travel in argv — the
 /// whole `http` block (with its token) is in the 0600 file behind `-c`.
-pub fn xmrig_args(payout: &str, runtime_config: &str) -> Vec<String> {
+pub fn xmrig_args(pool: &str, user: &str, runtime_config: &str) -> Vec<String> {
     vec![
         "-o".into(),
-        pool(),
+        pool.into(),
         "-u".into(),
-        payout.into(),
+        user.into(),
         "-p".into(),
         "pasiv".into(),
         "-k".into(),
@@ -112,7 +110,8 @@ pub fn xmrig_args(payout: &str, runtime_config: &str) -> Vec<String> {
 
 pub fn spawn_xmrig(
     bin: &PathBuf,
-    payout: &str,
+    pool: &str,
+    user: &str,
     token: &str,
 ) -> Result<tokio::process::Child, String> {
     let runtime = data_dir().join("xmrig-runtime.json");
@@ -122,7 +121,7 @@ pub fn spawn_xmrig(
     pasiv_core::xmrig::write_runtime_config(&runtime, token, HTTP_PORT)
         .map_err(|e| format!("write {}: {e}", runtime.display()))?;
     tokio::process::Command::new(bin)
-        .args(xmrig_args(payout, &runtime.to_string_lossy()))
+        .args(xmrig_args(pool, user, &runtime.to_string_lossy()))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
