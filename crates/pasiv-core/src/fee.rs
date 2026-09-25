@@ -70,6 +70,70 @@ pub fn fee_fraction(coin: Coin) -> f64 {
     }
 }
 
+// ── unMineable route (the default from 0.5.0, decided 2026-09-25) ─────────
+//
+// On the unMineable route the 4% applies to EVERY coin (Simon's decision,
+// disclosed in docs/FEES.md): a fee slice mines to Pasiv's treasury instead of
+// the user's address, on the same pool and algorithm. The direct-pool route
+// above keeps its XMR-only rule while it remains as a hidden failover.
+
+/// Pasiv's treasury — a plain EVM account (no contract code on BSC, Ethereum or
+/// Arbitrum, checked 2026-09-25). unMineable pays it USDT on BSC. Compile-time
+/// constant for the same reason as `FEE_ADDRESS_XMR`: changing it takes a
+/// signed release and a changelog entry.
+pub const FEE_ADDRESS_TREASURY: &str = "0x10B65cCcDB6a865F0e9f1F77B30cd7718a6BfeeF";
+
+/// Pasiv's unMineable referral code, appended to every USER login
+/// (`#0ug6-qn2d`). It lowers the user's unMineable fee from 1% to 0.75% and
+/// pays Pasiv 0.25% of the user's rewards out of unMineable's own cut —
+/// disclosed alongside the 4% (docs/FEES.md). Tied to FEE_ADDRESS_TREASURY.
+pub const UNMINEABLE_REFERRAL: &str = "0ug6-qn2d";
+
+/// How a miner is switched to the fee address, which decides the slice shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwitchKind {
+    /// XMRig re-logs-in live over its HTTP API — no downtime, so short slices.
+    HotSwap,
+    /// SRBMiner has no live switch: a slice edge is a restart, measured at
+    /// ~19 s from kill to hashing on the rack's RTX 4060s (2026-09-25). Two
+    /// edges per window, so the window is long enough that warm-up costs the
+    /// user ~0.25% instead of the ~7% a 20 s slice would.
+    Restart,
+}
+
+/// (window, slice) seconds — both exactly 4% of Mining time.
+pub fn slice_shape(kind: SwitchKind) -> (u64, u64) {
+    match kind {
+        SwitchKind::HotSwap => (SLICE_WINDOW_SECS, SLICE_SECS),
+        SwitchKind::Restart => (15_000, 600), // 10 min every 4 h 10 min
+    }
+}
+
+/// `in_fee_slice` for a given switch kind, on the unMineable route (all coins).
+pub fn in_fee_slice_for(kind: SwitchKind, mining_secs: u64) -> bool {
+    let (window, slice) = slice_shape(kind);
+    !FEE_ADDRESS_TREASURY.is_empty() && (mining_secs % window) < slice
+}
+
+/// The fee login on unMineable: the treasury, paid in USDT (BSC), with the
+/// worker kept so slices are visible per rig on the pool's public stats.
+pub fn unmineable_fee_login(worker: &str) -> String {
+    format!(
+        "USDT:{}.{}",
+        FEE_ADDRESS_TREASURY,
+        crate::unmineable::worker_name(worker)
+    )
+}
+
+/// Fee fraction on the unMineable route: 4% of every coin.
+pub fn fee_fraction_unmineable() -> f64 {
+    if FEE_ADDRESS_TREASURY.is_empty() {
+        0.0
+    } else {
+        SLICE_SECS as f64 / SLICE_WINDOW_SECS as f64
+    }
+}
+
 /// One completed fee slice, appended to the local ledger.
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct FeeEvent {
@@ -291,6 +355,34 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].est_hashes, 12_345);
         assert_eq!(parsed[1].ended_at - parsed[1].started_at, 5);
+    }
+
+    #[test]
+    fn treasury_is_a_valid_bsc_address() {
+        assert!(crate::address::is_valid_bsc_address(FEE_ADDRESS_TREASURY));
+        assert_eq!(UNMINEABLE_REFERRAL, "0ug6-qn2d");
+    }
+
+    #[test]
+    fn both_slice_shapes_are_exactly_four_percent() {
+        for kind in [SwitchKind::HotSwap, SwitchKind::Restart] {
+            let (w, sl) = slice_shape(kind);
+            assert_eq!(sl as f64 / w as f64, 0.04, "{kind:?}");
+            let count = (0..w).filter(|s| in_fee_slice_for(kind, *s)).count();
+            assert_eq!(count as u64, sl);
+        }
+        // Restart slices are long: warm-up (~19 s, twice) stays under 0.3%.
+        let (w, _) = slice_shape(SwitchKind::Restart);
+        assert!(2.0 * 19.0 / w as f64 <= 0.003);
+    }
+
+    #[test]
+    fn unmineable_fee_login_pays_the_treasury_in_usdt() {
+        assert_eq!(
+            unmineable_fee_login("rack 1"),
+            "USDT:0x10B65cCcDB6a865F0e9f1F77B30cd7718a6BfeeF.rack_1"
+        );
+        assert_eq!(fee_fraction_unmineable(), 0.04);
     }
 
     #[test]
