@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn worker_names_are_sanitised() {
-        assert_eq!(worker_name("DESKTOP-KGQIA43"), "DESKTOP_KGQIA43");
+        assert_eq!(worker_name("DESKTOP-AB12CDE"), "DESKTOP_AB12CDE");
         assert_eq!(worker_name("---"), "pasiv");
         assert_eq!(worker_name(&"x".repeat(50)).len(), 32);
     }

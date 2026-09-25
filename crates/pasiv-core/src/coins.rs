@@ -664,8 +664,8 @@ mod etc_lane_tests {
     #[test]
     fn etc_validates_evm_addresses_and_rejects_other_coins() {
         let v = etc().validate;
-        assert!(v("0x0c25a63ecF2fc2751C7a435c046227679df7cEeA"));
-        assert!(!v("0x0c25a63ECF2fc2751C7a435c046227679df7cEeA")); // bad checksum
+        assert!(v("0xdAC17F958D2ee523a2206206994597C13D831ec7"));
+        assert!(!v("0xDAC17F958D2ee523a2206206994597C13D831ec7")); // bad checksum
         assert!(!v("9f4QF8AD1nQ3nJahQVkMj8hFSVVzVom77b52JU7EW71Zexg6N8v")); // ERG
     }
 

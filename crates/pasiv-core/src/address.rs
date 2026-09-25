@@ -261,8 +261,8 @@ mod tests {
             "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
             "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB",
             "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb",
-            // Mined live on the rack against 2Miners during this spike.
-            "0x0c25a63ecF2fc2751C7a435c046227679df7cEeA",
+            // A well-known public contract (Tether USDT on Ethereum), EIP-55.
+            "0xdAC17F958D2ee523a2206206994597C13D831ec7",
         ] {
             assert!(is_valid_etc_address(a), "should accept {a}");
         }
