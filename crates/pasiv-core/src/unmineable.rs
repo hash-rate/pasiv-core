@@ -163,14 +163,14 @@ mod tests {
     fn usdt_network_follows_the_address() {
         assert_eq!(PayoutAsset::usdt_for(BSC), Some(PayoutAsset::UsdtBsc));
         assert_eq!(PayoutAsset::usdt_for(TRON), Some(PayoutAsset::UsdtTron));
-        assert_eq!(PayoutAsset::usdt_for("prl1pqea7hz"), None);
+        assert_eq!(PayoutAsset::usdt_for("prl1pxyz"), None);
     }
 
     #[test]
     fn login_has_unmineables_shape() {
         assert_eq!(
-            login(PayoutAsset::UsdtBsc, BSC, "Simon's Rig 1", "abcd-1234").as_deref(),
-            Some("USDT:0x000000000000000000000000000000000000dEaD.Simon_s_Rig_1#abcd-1234")
+            login(PayoutAsset::UsdtBsc, BSC, "Office Rig 1", "abcd-1234").as_deref(),
+            Some("USDT:0x000000000000000000000000000000000000dEaD.Office_Rig_1#abcd-1234")
         );
         assert_eq!(
             login(PayoutAsset::UsdtTron, TRON, "", "").as_deref(),

@@ -72,7 +72,7 @@ pub fn fee_fraction(coin: Coin) -> f64 {
 
 // ── unMineable route (the default from 0.5.0, decided 2026-09-25) ─────────
 //
-// On the unMineable route the 4% applies to EVERY coin (Simon's decision,
+// On the unMineable route the 4% applies to EVERY coin (decided 2026-09-25,
 // disclosed in docs/FEES.md): a fee slice mines to Pasiv's treasury instead of
 // the user's address, on the same pool and algorithm. The direct-pool route
 // above keeps its XMR-only rule while it remains as a hidden failover.

@@ -22,9 +22,6 @@ can see exactly what they pay and confirm it against the app's own fee ledger.
 >    fee** — it does not come out of your earnings.
 > 4. **Signed-in users are identified in analytics by an opaque id**
 >    (never-list item 4 revised). Anonymous users stay anonymous.
->
-> <!-- PENDING before publishing: Pearl-on-unMineable confirmed by the 48 h rack
-> earnings test (2026-09-25). If Pearl stays direct, item 2 reads "Monero". -->
 
 ---
 
