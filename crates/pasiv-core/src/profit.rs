@@ -45,8 +45,8 @@ pub struct CoinScore {
     pub ticker: String,
     /// USD/day at 1 kH/s, **net of Pasiv's own fee** — the user's take-home, so
     /// the ranking Auto acts on and the ranking the UI shows are the same number
-    /// the user actually earns. Pasiv's fee is XMR-only, so this only differs
-    /// from gross for XMR (see [`crate::fee::fee_fraction`]). Comparable across
+    /// the user actually earns. Auto runs only on the direct route, where Pasiv's
+    /// fee is XMR-only, so this only differs from gross for XMR (see [`crate::fee::fee_fraction`]). Comparable across
     /// coins on the same algorithm.
     pub usd_per_day_kh: f64,
 }

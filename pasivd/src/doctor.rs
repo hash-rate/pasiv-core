@@ -7,10 +7,10 @@ use pasiv_core::fee;
 use sha2::Digest;
 
 /// One diagnostic pass, greppable output (`PASS|WARN|FAIL <id> — <detail>`),
-/// exit 1 iff any FAIL — systemd/cron friendly. Self-contained on purpose:
-/// pasivd shares no code with the desktop (the tolerated-drift pattern this
-/// file already uses for the fee engine), so these checks mirror the desktop
-/// doctor's SHAPE, not its source. Adopted from an internal provider-audit
+/// exit 1 iff any FAIL — systemd/cron friendly. The money path (fee engine,
+/// validators, ledger) comes from the shared pasiv-core crate, but the doctor
+/// itself is pasivd's own: these checks mirror the desktop doctor's SHAPE,
+/// not its source. Adopted from an internal provider-audit
 /// checklist (2026-08-17).
 pub async fn cmd_doctor() -> Result<(), String> {
     let mut failed = false;
@@ -76,7 +76,7 @@ pub async fn cmd_doctor() -> Result<(), String> {
         None => report(
             "WARN",
             "payout",
-            "no payout set — approve the claim in the companion to receive one".into(),
+            "no XMR payout saved (expected when the account pays in USDT) — otherwise set one in the desktop app's Wallets tab".into(),
         ),
     }
 

@@ -4,9 +4,13 @@
 //! slice scheduler is driven by the same state machine the UI renders, making
 //! overcharge structurally impossible rather than promised.
 //!
-//! The fee address ships below as a compile-time constant (never-list: changing
-//! it requires a new signed release and a changelog entry). Every completed
-//! slice is appended to a local, human-readable JSONL ledger.
+//! The fee addresses ship below as compile-time constants — the BTC treasury
+//! for the unMineable (USDT) route, the default from 0.5.0, and the Monero
+//! address for the direct route (never-list: changing either requires a new
+//! signed release and a changelog entry). The slice is 20 s in every 500 s for
+//! a miner that switches live (XMRig) and 10 min in every 4 h 10 min for one
+//! that must restart (SRBMiner) — 4% either way. Every completed slice is
+//! appended to a local, human-readable JSONL ledger.
 //!
 //! Fail-safe by design: a runner only diverts to the fee address during an
 //! actual `Mining` slice, restarts always respawn on the user's address, and a
@@ -18,8 +22,9 @@ use serde::Serialize;
 
 use crate::types::Coin;
 
-/// Compile-time fee address (never-list: changing it requires a signed
-/// release and a changelog entry). Empty = fee engine off.
+/// Compile-time fee address for the direct route (never-list: changing it
+/// requires a signed release and a changelog entry). Empty = direct-route fee
+/// engine off. The unMineable route pays `FEE_ADDRESS_TREASURY` instead.
 ///
 /// Mainnet Monero standard address, set 2026-07-24 — the fee engine is ON in
 /// signed releases.
@@ -32,7 +37,8 @@ use crate::types::Coin;
 pub const FEE_ADDRESS_XMR: &str =
     "47jfXhesYLvN5M8Qzy5j7PCwd99kZKdwNKwxqonrdEDVVzopGUfNApn1NK98sPE7wgGzsEtvMYM1cZChVpDHasabFH1MZ1f";
 
-/// 20 s per ~8.3 minute window ≈ 4% of Mining time.
+/// 20 s per ~8.3 minute window = 4% of Mining time — the live-switch (XMRig)
+/// slice; see `slice_shape` for the restart-based (SRBMiner) one.
 pub const SLICE_WINDOW_SECS: u64 = 500;
 pub const SLICE_SECS: u64 = 20;
 
@@ -55,9 +61,10 @@ pub fn in_fee_slice(mining_secs: u64) -> bool {
     slices_enabled() && (mining_secs % SLICE_WINDOW_SECS) < SLICE_SECS
 }
 
-/// The fraction of gross revenue Pasiv's own fee takes for a given coin: the
-/// time-sliced 4% on XMR, and exactly zero on every other coin (the fee is
-/// XMR-only). Mirrors the runners' `fee_applies` gate
+/// The fraction of gross revenue Pasiv's own fee takes for a given coin on the
+/// DIRECT route: the time-sliced 4% on XMR, and exactly zero on every other
+/// coin (the direct-route fee is XMR-only; on the unMineable route every coin
+/// pays 4% — see `fee_fraction_unmineable`). Mirrors the runners' `fee_applies` gate
 /// (`slices_enabled() && coin == Coin::Xmr`) so the number Auto ranks on can
 /// never disagree with what's actually charged. Auto uses this to rank on the
 /// user's *take-home* rather than gross — otherwise it would prefer XMR over a
@@ -75,7 +82,8 @@ pub fn fee_fraction(coin: Coin) -> f64 {
 // On the unMineable route the 4% applies to EVERY coin (decided 2026-09-25,
 // disclosed in docs/FEES.md): a fee slice mines to Pasiv's treasury instead of
 // the user's address, on the same pool and algorithm. The direct-pool route
-// above keeps its XMR-only rule while it remains as a hidden failover.
+// above keeps its XMR-only rule for installs from before 0.5.0, until their
+// owner switches to USDT payouts; it is not offered to new installs.
 
 /// Pasiv's treasury — a Bitcoin SegWit address (bech32 checksum verified by
 /// the test below). unMineable converts the fee slices' hashrate and pays it
@@ -98,7 +106,7 @@ pub enum SwitchKind {
     /// XMRig re-logs-in live over its HTTP API — no downtime, so short slices.
     HotSwap,
     /// SRBMiner has no live switch: a slice edge is a restart, measured at
-    /// ~19 s from kill to hashing on the rack's RTX 4060s (2026-09-25). Two
+    /// ~19 s from kill to hashing on RTX 4060s (2026-09-25). Two
     /// edges per window, so the window is long enough that warm-up costs the
     /// user ~0.25% instead of the ~7% a 20 s slice would.
     Restart,

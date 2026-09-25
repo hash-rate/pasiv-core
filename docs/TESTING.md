@@ -50,8 +50,10 @@ that must be *rejected* (integrated XMR addresses, legacy Salvium, paymail).
 `Mining` — the only state in which fee time accrues — is entered by `Hashing`
 alone, and that the fee failsafe exits it into an Idle that says so.
 
-**pasivd** (`pasivd/src/main.rs` tests): the fee target inside a slice is the
-shared crate's address; the slice is the *first 20 seconds* of each window
+**pasivd** (`pasivd/src/main.rs` tests): the route rule — a valid USDT
+address on the account mines on unMineable with the treasury as the fee
+login, an invalid one never moves a node off its working route; the fee
+target inside a slice is the shared crate's address; the slice is the *first 20 seconds* of each window
 (the offset, not just the ratio); the device config and the miner runtime
 config are owner-only; the xmrig command line never carries the API token.
 

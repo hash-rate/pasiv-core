@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! unMineable — the single user-facing payout route (decided 2026-09-25).
+//! unMineable — the payout route every new install uses from 0.5.0 (decided
+//! 2026-09-25). Installs from before 0.5.0 keep the direct route (`coins`)
+//! until their owner switches to USDT payouts.
 //!
 //! The rig mines an ALGORITHM (PearlPow on the GPU, RandomX on the CPU) and
 //! unMineable pays the user a chosen ASSET (USDT by default) straight to the

@@ -43,9 +43,10 @@ route, which installs from before 0.5.0 keep until they switch, it applies to
 
 ### Other fees, which are not ours
 
-Two other parties take a cut of mining. Neither reaches Pasiv — but you will
-see them in your payouts, so they are listed here rather than left for you to
-discover.
+Other parties take a cut of mining too. None of it reaches Pasiv (the one
+exception, the referral, comes out of unMineable's fee, not yours) — but you
+will see these in your payouts, so they are listed here rather than left for
+you to discover.
 
 | | Amount | Taken by | |
 |---|---|---|---|
@@ -90,13 +91,16 @@ The fee is **time-sliced hashrate**, identical in mechanism to XMRig's dev fee
   machine that drives the UI
   ([`state`](../crates/pasiv-core/src/state.rs)), so it is structurally
   impossible to charge a paused user.
-- Slices are **short and frequent** — the first 20 seconds of every 500
-  seconds of Mining time ([`in_fee_slice`](../crates/pasiv-core/src/fee.rs)):
-  a pure function of time spent mining, which is what makes the percentage
-  structural rather than promised.
+- Each slice sits at the **start of its window** — the first 20 seconds of
+  every 500 seconds of Mining time for the CPU miner, the first 10 minutes of
+  every 4 h 10 min for the GPU miner
+  ([`in_fee_slice`](../crates/pasiv-core/src/fee.rs),
+  [`in_fee_slice_for`](../crates/pasiv-core/src/fee.rs)): a pure function of
+  time spent mining, which is what makes the percentage structural rather
+  than promised.
 
 **Where to read it:**
-- The schedule, the compile-time **fee address**, and the ledger format:
+- The schedule, the compile-time **fee addresses**, and the ledger format:
   [`crates/pasiv-core/src/fee.rs`](../crates/pasiv-core/src/fee.rs). Changing
   the address or the percentage requires a new signed release plus a changelog
   entry (never-list §3).
@@ -122,19 +126,23 @@ The fee is **time-sliced hashrate**, identical in mechanism to XMRig's dev fee
 
 ## 3. The fee ledger (the trust surface)
 
-In the desktop app (Pro → Fees), always visible:
+Every fee slice, on every surface, is written to a local append-only
+`fee-ledger.jsonl` (one JSON object per line: start, end, coin, fee address,
+estimated hashes) — in the desktop app's data
+folder, and in `pasivd`'s state directory on a headless node. Beside it:
 
-- Running total contributed, all-time.
-- The exact **fee address** — the BTC treasury on the USDT route, the Monero
-  address on the direct route (where Monero is the only coin with a Pasiv
-  fee) — with a
-  "check it on the pool ↗" link — so anyone can confirm on the mining pool
-  that the numbers match. (Monero is a private chain: a block explorer shows
-  nothing for any address, so verification is pool-side, not on-chain.)
-- A timestamped list of recent fee slices.
-- The plain-language line: **"Pasiv takes 4%, only while you're mining. Your
-  pool takes ~1% and the bundled XMRig engine keeps 1% — neither of those is
-  ours. Nothing else leaves this machine."**
+- **In the desktop app:** the Wallets tab states the fees in one line
+  (Pasiv 4% · unMineable pool 0.75%), and Settings → Diagnostics reports the
+  ledger — the number of slices and the total fee time. `pasivd doctor`
+  reports the same ledger on a headless node.
+- **The exact fee address**, a compile-time constant in
+  [`fee.rs`](../crates/pasiv-core/src/fee.rs) — the BTC treasury on the USDT
+  route, the Monero address on the direct route (where Monero is the only
+  coin with a Pasiv fee) — so anyone can confirm on the mining pool that the
+  numbers match: the treasury's public page on unMineable (linked in §2), or
+  the Monero fee address on MoneroOcean, linked from pasiv.network. (Monero
+  is a private chain: a block explorer shows nothing for any address, so
+  verification is pool-side, not on-chain.)
 
 Fairness is not a claim here; it's a receipt.
 

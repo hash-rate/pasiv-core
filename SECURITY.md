@@ -36,11 +36,14 @@ the app.
 - The `pasivd-linux-x64` release binary carries a `.minisig` made with the same
   key. The `curl | sh` installer pins that public key and **always** verifies the
   signature: if `minisign` is missing it installs it from the distribution's own
-  repositories, and if it cannot, it refuses to install rather than fall back to a
-  weaker check. (The sha256 is still checked, but it is only a transit check — it
+  repositories, or failing that from its author's release checked against a hash
+  pinned in the script, and if it cannot, it refuses to install rather than fall
+  back to a weaker check. (The sha256 is still checked, but it is only a transit check — it
   shares an origin with the binary, so it cannot stand in for the signature.)
-- macOS builds are Developer ID–signed and Apple-notarized.
-- The fee address is a compile-time constant; changing it requires a signed release and
+- macOS builds are Developer ID–signed and Apple-notarized; Windows builds are
+  Authenticode-signed.
+- The fee addresses (the BTC treasury on the USDT route, the Monero address on the
+  direct route) are compile-time constants; changing either requires a signed release and
   a changelog entry (see [`docs/FEES.md`](docs/FEES.md), the binding never-list).
 
 ## Design notes

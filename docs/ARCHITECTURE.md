@@ -15,21 +15,30 @@ docs/                 FEES.md (the binding never-list) + these notes
 
 ## pasiv-core, module by module
 
-- **`fee`** — the 4% fee engine. The compile-time fee address, the structural
-  time-slice schedule (`(mining_secs % 500) < 20` — a pure function of Mining
-  time, so a paused or stopped miner is uncharge­able by construction), the
+- **`fee`** — the 4% fee engine. The compile-time fee addresses (the BTC
+  treasury on the unMineable route, the Monero address on the direct route),
+  the structural time-slice schedules (`(mining_secs % 500) < 20` for a
+  live-switching miner, 10 min in every 4 h 10 min for one that must restart —
+  a pure function of Mining time, so a paused or stopped miner is
+  uncharge­able by construction), the
   append-only JSONL ledger every slice is written to, and the
   `SliceScheduler` enforcement state machine with its stop-don't-park
   failsafe. `docs/FEES.md` is the binding contract this module implements.
-- **`coins`** — the roster: for every supported coin, exactly which miner
-  runs it, which pool it submits to, its address rule, its dashboard link.
-  Adding a coin is one row here.
+- **`unmineable`** — the USDT payout route, the default for new installs
+  from 0.5.0: the pool login (`USDT:<address>.<worker>#<referral>`), the
+  BSC/TRON address rules, and the pool hosts. The pool pays the user's own
+  address.
+- **`coins`** — the direct-route roster (installs from before 0.5.0, until
+  their owner switches): for every supported coin, exactly which miner runs
+  it, which pool it submits to, its address rule, its dashboard link. Adding
+  a coin is one row here. Zephyr, Salvium, Verus, Ravencoin and Ergo are
+  retiring: Pasiv stops mining them on 1 November 2026.
 - **`address`** — payout validators (paste-time shape checks; the pool's
   `mining.authorize` remains the authoritative check).
 - **`state`** — the miner state machine. The fee engine is driven by it,
   which is what makes "never charge a non-mining user" structural.
-- **`profit`** — the Auto/Max-Profit ranking math, computed on the user's
-  take-home (net of the fee), never on gross.
+- **`profit`** — the Auto/Max-Profit ranking math (direct route only),
+  computed on the user's take-home (net of the fee), never on gross.
 - **`earnings`** — the $/day estimate. Every surface — desktop, phone card,
   headless node — computes it with this one function.
 - **`hardware`** — CPU/GPU detection and the thread-count decision (it
@@ -48,11 +57,13 @@ docs/                 FEES.md (the binding never-list) + these notes
 
 A complete, runnable consumer of the crate — the end-to-end money path anyone
 can compile and run: fetch-and-verify XMRig (double sha256, atomic unpack),
-claim a node against the cloud API, mine, enforce the fee slices with the
-same level-triggered reconcile the crate's conformance test encodes, write
-the same ledger. Its cloud endpoint, key, and pool are defaults overridable
-by environment (`PASIVD_API_URL` / `PASIVD_ANON_KEY` / `PASIVD_POOL`), so an
-auditor or a fork can point it anywhere without patching source.
+claim a node against the cloud API, mine (USDT via unMineable when the
+owner's account has a USDT payout, otherwise XMR direct), enforce the fee
+slices with the same level-triggered reconcile the crate's conformance test
+encodes, write the same ledger. Its cloud endpoint, key, and direct-route
+pool are defaults overridable by environment (`PASIVD_API_URL` /
+`PASIVD_ANON_KEY` / `PASIVD_POOL`), so an auditor or a fork can point it
+anywhere without patching source.
 
 Modules: `main.rs` (config, claim, run loop), `doctor.rs` (the PASS/WARN/FAIL
 diagnostic pass), `xmrig.rs` (fetch/verify/spawn + thin HTTP wrappers over
@@ -65,7 +76,8 @@ release signing, the website) consume this crate as a **rev-pinned git
 dependency**. The pin is the trust mechanism: a push to this repository
 changes nothing a user runs until the app repository deliberately bumps the
 pin — a visible diff there, gated by its own tests, including a literal pin
-of the fee address and slice constants that fails any bump which moves them.
+of the Monero fee address and the CPU slice constants that fails any bump
+which moves them.
 The `pasivd-linux-x64` attached to every release is built from this
 repository at that same pinned rev, tested first, then minisign-signed with
 the same key the desktop updater trusts.

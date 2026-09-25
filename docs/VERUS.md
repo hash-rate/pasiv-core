@@ -167,7 +167,8 @@ submit + reconnect-with-backoff + vardiff via `set_target`). `start()` returns
   (`solution[1337]`) + a per-worker stride on the counting nonce.
 - **Governor pause/resume** implemented (workers idle, connection stays warm).
 - `set_payout` intentionally unsupported — the VRSC payout *is* the stratum login,
-  and the fee engine is Monero-only, so it never asks Verus to divert.
+  and the direct-route fee engine (the only route Verus mines on) is
+  Monero-only, so it never asks Verus to divert.
 - `Coin::Vrsc` roster row (`na.luckpool.net:3956`), VRSC validator
   (`is_valid_vrsc_address` — 'R' prefix, 34 base58 chars), webview mirror + picker chip.
 - **Excluded from Auto / Max-Profit ranking** (`CoinSpec::auto_rankable`): VerusHash is a

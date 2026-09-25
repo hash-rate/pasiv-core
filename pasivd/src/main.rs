@@ -5,13 +5,17 @@
 //! commands and zero UI. A daemon can't do SIWE, so it pairs like a TV app:
 //!
 //!   pasivd claim   → prints a 6-char code; approve it in the Pasiv companion
-//!   pasivd run     → mines XMR (CPU) to YOUR payout, publishes state to the
-//!                    fleet, obeys start/stop from the phone
+//!   pasivd run     → mines Monero (CPU) paid to YOUR address — in USDT via
+//!                    unMineable when the account has a USDT payout, else in
+//!                    XMR direct — publishes state to the fleet, obeys
+//!                    start/stop from the phone
 //!
 //! Trust model mirrors the desktop (docs/FEES.md — the never-list):
 //!   - non-custodial: mines straight to the owner's payout address
 //!   - fee parity: the same time-sliced 4% (20 s per 500 s of Mining), to the
-//!     same compile-time fee address, via the same xmrig config hot-reload
+//!     same compile-time fee address as the desktop on the same route (the
+//!     BTC treasury on unMineable, the Monero address direct), via the same
+//!     xmrig config hot-reload
 //!   - remote actions are start/stop only (the desktop additionally accepts
 //!     signed updates; see docs/FEES.md never-list item 8)
 //!   - the miner binary is fetched from xmrig's official release and
@@ -59,7 +63,8 @@ fn write_config(path: &std::path::Path, cfg: &DeviceConfig) -> Result<(), String
 // or an auditor — can point the daemon anywhere without patching source:
 //   PASIVD_API_URL   the device API endpoint
 //   PASIVD_ANON_KEY  the publishable key for it (RLS/edge auth do the enforcing)
-//   PASIVD_POOL      the stratum host:port
+//   PASIVD_POOL      the direct-route stratum host:port (the unMineable route
+//                    always uses unMineable's RandomX host)
 const DEFAULT_FN_URL: &str = "https://vmmiuftvngxgwimwlrke.supabase.co/functions/v1/pasivd";
 // Publishable key — same one the apps ship; safe to publish, useless without RLS consent.
 const DEFAULT_ANON_KEY: &str = "sb_publishable_lp01D57d8gnuW49kelunDg_6c_ld5Lb";
@@ -256,10 +261,10 @@ async fn cmd_claim() -> Result<(), String> {
             );
             if payout.is_none() && payout_usdt.is_none() {
                 println!(
-                    "  {} No XMR payout on your account yet. Set one in the Pasiv desktop",
+                    "  {} No payout on your account yet. Set one in the Pasiv desktop",
                     ui::warn_mark()
                 );
-                println!("    app (Coins → Monero) and it syncs here automatically.");
+                println!("    app (Wallets) and it syncs here automatically.");
             }
             println!(
                 "  Start mining:  {}",

@@ -95,10 +95,11 @@ pub fn print_help(version: &str) {
     );
     println!("The headless Pasiv node — turn a server, NAS, or spare box into a rig in");
     println!(
-        "your fleet. Mines Monero to {} payout address and shows up in the",
+        "your fleet. Mines Monero on the CPU, paid to {} address (USDT via",
         b("your own")
     );
-    println!("phone companion beside your desktops. No GUI, no wallet on the box.");
+    println!("unMineable, or XMR direct), and shows up in the phone companion beside");
+    println!("your desktops. No GUI, no wallet on the box.");
     println!();
     println!("{}", b("USAGE"));
     println!("  pasivd {}", cyan("<command>"));
@@ -150,10 +151,11 @@ pub fn print_command_help(cmd: &str) {
             );
             println!();
             println!(
-                "Nothing mines until you claim {} an XMR payout exists on the",
+                "Nothing mines until you claim {} a payout exists on the account",
                 bold("and")
             );
-            println!("account (desktop app -> Coins -> Monero, which syncs automatically).");
+            println!("(desktop app -> Wallets: a USDT address, or a Monero address on the");
+            println!("direct route; it syncs automatically).");
         }
         "run" => {
             println!("{} — run the node in the foreground.", bold("pasivd run"));

@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Payout-address validation — extracted from the desktop app's config module.
 //
-// Every validator below checks prefix + length + alphabet, and none verifies a
-// checksum, even though Monero, Zephyr, Salvium and Verus addresses all carry
-// one. That is a deliberate, documented limit rather than an oversight: these
+// The mined-coin validators below check prefix + length + alphabet, and none
+// verifies a checksum, even though Monero, Zephyr, Salvium and Verus addresses
+// all carry one. The exceptions are the addresses an unMineable pool cannot
+// change once mining starts, or that pay Pasiv: TRON (base58check, verified in
+// full), EVM/BSC (EIP-55, enforced when mixed case is present) and the BTC
+// treasury (bech32/bech32m, verified). For the rest the loose check is a
+// deliberate, documented limit rather than an oversight: these
 // run on every keystroke as paste-time feedback, and the pool's own
 // `mining.authorize` is the authoritative check that rejects a bad address.
 //

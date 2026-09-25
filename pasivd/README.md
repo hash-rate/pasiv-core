@@ -1,17 +1,18 @@
 # pasivd — the headless Pasiv node
 
 Turn a server, NAS, or lab box into a rig in your Pasiv fleet with two commands
-and no GUI. `pasivd` mines Monero (CPU) to your payout address and reports state
-to the fleet, so a screenless machine shows up in the phone companion alongside
-your desktops. It versions **independently** of the desktop app (currently
-`0.1.2`).
+and no GUI. `pasivd` mines Monero on the CPU, paid to your own address — in
+USDT via unMineable when your account has a USDT payout (the default for new
+Pasiv installs), otherwise in XMR direct — and reports state to the fleet, so a
+screenless machine shows up in the phone companion alongside your desktops. It
+versions **independently** of the desktop app (currently `0.1.5`).
 
 A daemon can't do a wallet signature (no browser), so it pairs like a TV app.
 
 ## Install
 
 ```bash
-curl -fsSL https://pasiv.network/pasivd.sh | sh     # minisign-signed static binary + systemd unit
+curl -fsSL https://pasiv.network/pasivd.sh | sh     # minisign-verified static binary + systemd unit
 sudo pasivd claim                                   # prints a 6-char code
 #   → enter the code in the Pasiv companion app: +  → Add node
 sudo systemctl enable --now pasivd                  # starts mining once a payout exists on your account
@@ -19,8 +20,9 @@ sudo systemctl enable --now pasivd                  # starts mining once a payou
 
 The installer drops a static musl binary at `/usr/local/bin/pasivd` and a
 hardened systemd unit (`Nice=19`, yields to real work). Nothing mines until you
-claim the node **and** an XMR payout is set on your account (desktop app →
-Coins → Monero, which syncs automatically).
+claim the node **and** a payout is set on your account (desktop app → Wallets:
+a USDT address, or a Monero address on the direct route; it syncs
+automatically).
 
 ## Commands
 
@@ -44,9 +46,12 @@ exits `2` (usage) and a failure exits `1`, so a wrapper can tell them apart.
 
 ## Trust model (mirrors the desktop — see [`../docs/FEES.md`](../docs/FEES.md), the binding never-list)
 
-- **Non-custodial** — mines straight to your payout address; pasivd never holds funds.
+- **Non-custodial** — the pool pays your own address (unMineable converts to
+  USDT and pays daily once past 1.5 USDT); pasivd never holds funds.
 - **Fee parity** — the same time-sliced 4% (20 s of every 500 s of mining), to the
-  same compile-time fee address. A headless node is not a fee-free loophole.
+  same compile-time fee address as the desktop on that route (the BTC treasury
+  on unMineable, the Monero fee address direct). A headless node is not a
+  fee-free loophole.
 - **Remote actions are start/stop only** — nothing from the phone can change the
   coin, pool, or payout.
 - **No payout uplink** — the push never carries a payout address (enforced by the
@@ -92,5 +97,5 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 CI builds the musl binary and attaches it to every desktop release as
-`pasivd-linux-x64` (+ `.sha256` + `.minisig` — signed with the same minisign key as every desktop update; the installer pins the public key and verifies when `minisign` is installed); `pasivd.sh` resolves the latest one. Testing
+`pasivd-linux-x64` (+ `.sha256` + `.minisig` — signed with the same minisign key as every desktop update; the installer pins the public key, installs `minisign` if it is missing, and refuses to install without a valid signature); `pasivd.sh` resolves the latest one. Testing
 notes and the coverage floor are in [`../docs/TESTING.md`](../docs/TESTING.md).

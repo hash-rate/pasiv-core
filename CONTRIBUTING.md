@@ -25,9 +25,11 @@ agreement. PRs without it can't be merged, however good the code — sorry.
 
 - **The never-list is binding** ([docs/FEES.md](docs/FEES.md) §4). A PR that
   violates it will be closed regardless of technical merit.
-- **The fee constants only change with a release.** `FEE_ADDRESS_XMR`,
-  `SLICE_WINDOW_SECS`, and `SLICE_SECS` are deliberately compile-time; a PR
-  touching them needs a maintainer-driven release and changelog entry.
+- **The fee constants only change with a release.** `FEE_ADDRESS_TREASURY`,
+  `FEE_ADDRESS_XMR`, `SLICE_WINDOW_SECS`, `SLICE_SECS`, the restart-based
+  slice in `slice_shape`, and `UNMINEABLE_REFERRAL` are deliberately
+  compile-time; a PR touching them needs a maintainer-driven release and
+  changelog entry.
 - **Tests pin behaviour, not lines.** If you change behaviour, change the
   test that pinned it and say why in the commit message — the suite is full
   of tests that exist because something real broke once.

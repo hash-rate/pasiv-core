@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Coin roster — the single source of truth (Rust side) for which coins Pasiv
-//! can mine and everything coin-specific about each: which vendored miner
-//! handles it, its algorithm, default pool, address-validation rule, and the
-//! "verify on pool" dashboard link. Adding a coin = one row here (plus a
-//! vendored binary only if it needs a *new* miner). The supervisor, governor,
-//! and fee engine stay coin-agnostic.
+//! can mine on the DIRECT route (a coin address paid by the coin's own pool —
+//! installs from before 0.5.0, until their owner switches; new installs mine
+//! through `unmineable`) and everything coin-specific about each: which
+//! vendored miner handles it, its algorithm, default pool, address-validation
+//! rule, and the "verify on pool" dashboard link. Adding a coin = one row
+//! here (plus a vendored binary only if it needs a *new* miner). The
+//! supervisor, governor, and fee engine stay coin-agnostic.
 //!
 //! Display-only fields (human name, UI accent, input placeholder) live in the
 //! webview mirror `src/coins.ts`, keyed by the same lowercase `ticker`, so
 //! they never become dead code here. Keep the two in sync — same tolerated
 //! pattern as the address validators.
+//!
+//! Zephyr, Salvium, Verus, Ravencoin and Ergo are retiring: Pasiv stops mining
+//! them on 1 November 2026, and their rows go in 0.6.0.
 
 use crate::types::{Coin, MinerId};
 
@@ -258,12 +263,14 @@ pub const ROSTER: &[CoinSpec] = &[
         ticker: "prl",
         // GPU → Pearl via SRBMiner-Multi (algo `pearlhash`) on LuckyPool's plain
         // stratum. Windows/Linux only (no macOS SRBMiner build) AND needs an
-        // eligible NVIDIA GPU — lib.rs only adds the SrbMiner supervisor when
-        // hardware::detect() finds a CUDA Turing+/≥3 GB card, so on a GPU-less
-        // box start_all reports "PRL can't be mined on this machine yet".
+        // eligible GPU — lib.rs only adds the SrbMiner supervisor when
+        // hardware::detect() finds a CUDA Turing+/≥3 GB card (or, in beta, an
+        // AMD RX 6000/7000/9000 with ≥4 GB), so on a GPU-less box start_all
+        // reports "PRL can't be mined on this machine yet".
         // SRBMiner takes a 2% pearlhash dev fee (third-party, disclosed like
-        // XMRig's 1%); LuckyPool takes its own pool fee. Pasiv's own 4% fee is
-        // XMR-only, so it never applies to PRL.
+        // XMRig's 1%); LuckyPool takes its own pool fee. On this direct route
+        // Pasiv's own 4% fee is XMR-only, so it never applies to PRL here; on
+        // the unMineable route it applies to every coin, Pearl included.
         miner: MinerId::SrbMiner,
         algo: Some("pearlhash"),
         // Was pearl.alphapool.tech:5571, shipped in 0.3.8 on a "verify on the test
