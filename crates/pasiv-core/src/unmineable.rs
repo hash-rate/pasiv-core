@@ -115,6 +115,32 @@ pub fn login(asset: PayoutAsset, address: &str, worker: &str, referral: &str) ->
     Some(s)
 }
 
+/// unMineable's public stats page for an address — the "verify on the pool"
+/// trust anchor, like every other coin's dashboard link. Only built for an
+/// address the asset accepts.
+pub fn stats_url(asset: PayoutAsset, address: &str) -> Option<String> {
+    let address = address.trim();
+    asset.validate(address).then(|| {
+        format!(
+            "https://unmineable.com/address/{}?coin={}",
+            address,
+            asset.symbol()
+        )
+    })
+}
+
+/// unMineable's public API for an address's balance and payout threshold.
+pub fn address_api_url(asset: PayoutAsset, address: &str) -> Option<String> {
+    let address = address.trim();
+    asset.validate(address).then(|| {
+        format!(
+            "https://api.unminable.com/v4/address/{}?coin={}",
+            address,
+            asset.symbol()
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +182,18 @@ mod tests {
     fn a_bad_address_never_reaches_the_pool() {
         assert_eq!(login(PayoutAsset::UsdtBsc, "0x1234", "w", ""), None);
         assert_eq!(login(PayoutAsset::UsdtTron, BSC, "w", ""), None); // wrong network
+    }
+
+    #[test]
+    fn stats_links_only_for_valid_addresses() {
+        assert_eq!(
+            stats_url(PayoutAsset::UsdtBsc, BSC).as_deref(),
+            Some("https://unmineable.com/address/0x000000000000000000000000000000000000dEaD?coin=USDT")
+        );
+        assert_eq!(stats_url(PayoutAsset::UsdtBsc, "nope"), None);
+        assert!(address_api_url(PayoutAsset::UsdtTron, TRON)
+            .unwrap()
+            .starts_with("https://api.unminable.com/v4/address/T"));
     }
 
     #[test]
