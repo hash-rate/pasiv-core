@@ -113,7 +113,7 @@ pub fn is_valid_erg_address(a: &str) -> bool {
 }
 
 /// Pearl (PRL) payout address — a bech32 string: hrp `prl`, separator `1`, then
-/// a bech32-charset payload (e.g. `prl1pqea7hz…lwl2`, ~62 chars). Shape-only
+/// a bech32-charset payload (e.g. `prl1p…` + bech32 payload, ~62 chars). Shape-only
 /// validation — prefix + bech32 alphabet + a sane length — like every other
 /// coin here; the pool's authorize is the authoritative check. Note bech32
 /// excludes `1`, `b`, `i`, `o`, so the payload charset is distinct from base58.
@@ -122,7 +122,7 @@ pub fn is_valid_erg_address(a: &str) -> bool {
 /// (github.com/pearl-research-labs/pearl), NOT third-party "pearl wallet" sites —
 /// several of those rank in search with contradictory address claims (XMSS vs
 /// Taproot), some for a different chain. A real address from that wallet
-/// (`prl1pqea7hz…`) matches this rule.
+/// (`prl1p…`) matches this rule.
 pub fn is_valid_prl_address(a: &str) -> bool {
     const BECH32: &str = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
     match a.strip_prefix("prl1") {
@@ -302,7 +302,7 @@ mod tests {
             "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAe", // 39
             "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAedd", // 41
             "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeZ", // non-hex
-            "prl1pqea7hz42566cckfmg70uyw43e7c67rtazrvy927ghjcx6txn5lzsjrlwl2",
+            "prl1p7avmp9fu3gfkx64629q050q9d9snvwd07avmp9fu3gfkx64629q050q9d9",
         ] {
             assert!(!is_valid_etc_address(a), "should reject {a:?}");
         }
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn pearl_address_is_bech32_prl1() {
         // A real AlphaPool Pearl address (bech32: hrp "prl", then payload).
-        let good = "prl1pqea7hz42566cckfmg70uyw43e7c67rtazrvy927ghjcx6txn5lzsjrlwl2";
+        let good = "prl1p7avmp9fu3gfkx64629q050q9d9snvwd07avmp9fu3gfkx64629q050q9d9";
         assert!(is_valid_prl_address(good));
         assert!(!is_valid_prl_address("prl1"), "empty payload");
         assert!(
