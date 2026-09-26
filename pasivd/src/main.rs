@@ -889,22 +889,17 @@ mod tests {
         assert!(is_valid_xmr_address(FEE_ADDRESS_XMR));
     }
 
-    /// Not just "20 of every 500" but WHICH 20 — the first, matching the
-    /// desktop's `mining_secs % 500 < 20`. A slice at a different offset would
-    /// still be 4%, but its ledger timestamps wouldn't line up with a desktop
-    /// node's on the same fleet, breaking the shared-audit promise.
+    /// Not just "20 of every 500" but WHICH 20 — the LAST, matching the
+    /// desktop (both call the shared `in_fee_slice`). The slice closes each
+    /// window so a session that ends early never paid it; ledger timestamps
+    /// line up across a fleet, keeping the shared-audit promise.
     #[test]
-    fn fee_slice_is_the_first_20_seconds_of_each_window() {
-        assert!(in_fee_slice(0), "slice opens the window");
-        assert!(in_fee_slice(19), "last second of the slice");
-        assert!(!in_fee_slice(20), "back on the user immediately after");
-        assert!(
-            !in_fee_slice(499),
-            "last second of the window is the user's"
-        );
-        assert!(in_fee_slice(500), "next window's slice opens");
-        assert!(in_fee_slice(519));
-        assert!(!in_fee_slice(520));
+    fn fee_slice_is_the_last_20_seconds_of_each_window() {
+        assert!(!in_fee_slice(0), "a new session starts on the user");
+        assert!(!in_fee_slice(479), "still the user's");
+        assert!(in_fee_slice(480), "slice opens 20 s before the window ends");
+        assert!(in_fee_slice(499), "last second of the window is the fee's");
+        assert!(!in_fee_slice(500), "next window opens on the user");
     }
 
     /// The payout arrives from the server, which we do NOT trust for a value

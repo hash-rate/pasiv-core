@@ -109,9 +109,13 @@ The fee is **time-sliced hashrate**, identical in mechanism to XMRig's dev fee
   machine that drives the UI
   ([`state`](../crates/pasiv-core/src/state.rs)), so it is structurally
   impossible to charge a paused user.
-- Each slice sits at the **start of its window** — the first 20 seconds of
-  every 500 seconds of Mining time for the CPU miner, the first 10 minutes of
-  every 4 h 10 min for the GPU miner
+- Each slice sits at the **end of its window** — the last 20 seconds of
+  every 500 seconds of Mining time for the CPU miner, the last 10 minutes of
+  every 4 h 10 min for the GPU miner. Mining time starts from zero each time
+  the app starts, so a slice at the start would be charged in full by every
+  short session; at the end, **no session ever pays more than 4%** (changed
+  2026-09-27, Pasiv 0.5.7 — before that a GPU rig restarted by an update paid
+  its 10-minute slice up front)
   ([`in_fee_slice`](../crates/pasiv-core/src/fee.rs),
   [`in_fee_slice_for`](../crates/pasiv-core/src/fee.rs)): a pure function of
   time spent mining, which is what makes the percentage structural rather

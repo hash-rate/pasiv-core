@@ -58,7 +58,16 @@ pub fn slices_enabled() -> bool {
 /// returns false entirely when no fee address ships. A runner consults this
 /// each tick to decide which address the miner points at.
 pub fn in_fee_slice(mining_secs: u64) -> bool {
-    slices_enabled() && (mining_secs % SLICE_WINDOW_SECS) < SLICE_SECS
+    slices_enabled() && slice_at_window_end(mining_secs, SLICE_WINDOW_SECS, SLICE_SECS)
+}
+
+/// The slice sits at the END of each window, never the start. Mining time
+/// starts from zero on every launch, so a slice at the start was charged in
+/// full by every short session — a GPU rig restarted by an update paid its
+/// whole 10-minute slice up front (≈17% of a 1 h session). At the end, any
+/// session pays at most 4%, and over a long run exactly 4% (2026-09-27).
+fn slice_at_window_end(mining_secs: u64, window: u64, slice: u64) -> bool {
+    mining_secs % window >= window - slice
 }
 
 /// The fraction of gross revenue Pasiv's own fee takes for a given coin on the
@@ -123,7 +132,7 @@ pub fn slice_shape(kind: SwitchKind) -> (u64, u64) {
 /// `in_fee_slice` for a given switch kind, on the unMineable route (all coins).
 pub fn in_fee_slice_for(kind: SwitchKind, mining_secs: u64) -> bool {
     let (window, slice) = slice_shape(kind);
-    !FEE_ADDRESS_TREASURY.is_empty() && (mining_secs % window) < slice
+    !FEE_ADDRESS_TREASURY.is_empty() && slice_at_window_end(mining_secs, window, slice)
 }
 
 /// The fee login on unMineable: the treasury, paid in BTC, with the worker
@@ -217,8 +226,11 @@ pub fn fee_destination(
     if !a.is_valid() || now_unix >= a.until_unix {
         return FeeDestination::Treasury;
     }
+    // The affiliate's windows are the LAST of each 4, so a short session
+    // (mining time restarts at every launch) favours the treasury rather than
+    // handing the affiliate the only slice it pays — exact over any 4 windows.
     let (window, _) = slice_shape(kind);
-    if (mining_secs / window) % 4 < u64::from(a.share_of_4) {
+    if (mining_secs / window) % 4 >= 4 - u64::from(a.share_of_4) {
         FeeDestination::Affiliate
     } else {
         FeeDestination::Treasury
@@ -572,6 +584,33 @@ mod tests {
         }
     }
 
+    /// Mining time restarts at 0 on every launch. No session, however short,
+    /// may pay more than 4% (the slice closes each window), and a short
+    /// session can never hand an affiliate more than its points of the fee.
+    #[test]
+    fn short_sessions_never_pay_more_than_4pct_or_overpay_the_affiliate() {
+        let a = aff(2, AffiliateAsset::Usdt, BSC);
+        for kind in [SwitchKind::HotSwap, SwitchKind::Restart] {
+            let (window, _) = slice_shape(kind);
+            for len in [60, window / 2, window, window + 1, 3 * window + 7] {
+                let fee = (0..len).filter(|t| in_fee_slice_for(kind, *t)).count() as f64;
+                assert!(
+                    fee / len as f64 <= 0.04 + 1e-9,
+                    "{kind:?} {len}s paid {}",
+                    fee / len as f64
+                );
+                let to_aff = (0..len)
+                    .filter(|t| in_fee_slice_for(kind, *t))
+                    .filter(|t| fee_destination(kind, *t, Some(&a), 0) == FeeDestination::Affiliate)
+                    .count() as f64;
+                assert!(
+                    to_aff <= fee * 0.5 + 1e-9 || fee == 0.0,
+                    "{kind:?} {len}s: affiliate {to_aff} of {fee}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn no_affiliate_expired_or_invalid_means_the_treasury_as_before() {
         for t in 0..20_000 {
@@ -583,11 +622,11 @@ mod tests {
         let mut a = aff(2, AffiliateAsset::Usdt, BSC);
         a.until_unix = 1_000;
         assert_eq!(
-            fee_destination(SwitchKind::HotSwap, 0, Some(&a), 1_000),
+            fee_destination(SwitchKind::HotSwap, 1_000, Some(&a), 1_000),
             FeeDestination::Treasury
         );
         assert_eq!(
-            fee_destination(SwitchKind::HotSwap, 0, Some(&a), 999),
+            fee_destination(SwitchKind::HotSwap, 1_000, Some(&a), 999),
             FeeDestination::Affiliate
         );
         let bad = aff(3, AffiliateAsset::Usdt, BSC); // 3 of 4 is not a tier
@@ -652,9 +691,17 @@ mod tests {
             s.desired_for(SwitchKind::Restart, false, 0),
             PayoutSide::User
         );
-        assert_eq!(s.desired_for(SwitchKind::Restart, true, 0), PayoutSide::Fee);
+        // A new session starts on the user: nothing is charged up front.
         assert_eq!(
-            s.desired_for(SwitchKind::Restart, true, 600),
+            s.desired_for(SwitchKind::Restart, true, 0),
+            PayoutSide::User
+        );
+        assert_eq!(
+            s.desired_for(SwitchKind::Restart, true, 14_400),
+            PayoutSide::Fee
+        );
+        assert_eq!(
+            s.desired_for(SwitchKind::Restart, true, 15_000),
             PayoutSide::User
         );
         assert_eq!(
@@ -725,9 +772,13 @@ mod tests {
     fn fee_slice_follows_the_4pct_window_schedule() {
         // With an address shipped: the first SLICE_SECS of every SLICE_WINDOW_SECS
         // of Mining time are the fee slice — exactly 4% — and nothing else.
-        assert!(in_fee_slice(0) && in_fee_slice(SLICE_SECS - 1));
-        assert!(!in_fee_slice(SLICE_SECS) && !in_fee_slice(SLICE_WINDOW_SECS - 1));
-        assert!(in_fee_slice(SLICE_WINDOW_SECS)); // wraps into the next window
+        // The slice closes the window: a session that ends early never paid it.
+        assert!(!in_fee_slice(0) && !in_fee_slice(SLICE_WINDOW_SECS - SLICE_SECS - 1));
+        assert!(
+            in_fee_slice(SLICE_WINDOW_SECS - SLICE_SECS) && in_fee_slice(SLICE_WINDOW_SECS - 1)
+        );
+        assert!(!in_fee_slice(SLICE_WINDOW_SECS)); // the next window opens on the user
+        assert!(in_fee_slice(2 * SLICE_WINDOW_SECS - 1)); // and closes on the fee
 
         let count = (0..SLICE_WINDOW_SECS).filter(|s| in_fee_slice(*s)).count();
         assert_eq!(count as f64 / SLICE_WINDOW_SECS as f64, 0.04);
@@ -752,8 +803,8 @@ mod tests {
         let mut s = SliceScheduler::new();
         // Outside a slice, mining: stay on the user.
         assert_eq!(s.desired(true, 250), PayoutSide::User);
-        // Slice opens (mining_secs wraps into the window): fee side desired.
-        assert_eq!(s.desired(true, 500), PayoutSide::Fee);
+        // Slice opens (the last 20 s of the window): fee side desired.
+        assert_eq!(s.desired(true, 480), PayoutSide::Fee);
         // Rising edge: no event, slice opens.
         assert!(s.confirmed(PayoutSide::Fee, 1_000, 5_000.0).is_none());
         assert_eq!(s.current(), PayoutSide::Fee);
@@ -916,12 +967,12 @@ mod tests {
             applies: true,
             sets: 0,
         };
-        let (ev, stopped) = tick(&mut sched, &mut m, true, 0, 1_000, 500.0);
+        let (ev, stopped) = tick(&mut sched, &mut m, true, 480, 1_000, 500.0);
         assert!(ev.is_none() && !stopped);
         assert_eq!(m.login, FEE_ADDRESS_XMR, "slice opens on the fee address");
-        let (ev, stopped) = tick(&mut sched, &mut m, true, 10, 1_010, 500.0);
+        let (ev, stopped) = tick(&mut sched, &mut m, true, 490, 1_010, 500.0);
         assert!(ev.is_none() && !stopped);
-        let (ev, stopped) = tick(&mut sched, &mut m, true, 25, 1_020, 500.0);
+        let (ev, stopped) = tick(&mut sched, &mut m, true, 505, 1_020, 500.0);
         assert!(!stopped);
         let ev = ev.expect("leaving the slice closes exactly one event");
         assert_eq!((ev.started_at, ev.ended_at), (1_000, 1_020));
@@ -939,7 +990,7 @@ mod tests {
             sets: 0,
         };
         for i in 0..3 {
-            let _ = tick(&mut sched, &mut m, true, 0, 2_000 + i, 500.0);
+            let _ = tick(&mut sched, &mut m, true, 480, 2_000 + i, 500.0);
         }
         assert_eq!(m.sets, 3, "a lying PUT is retried, never believed");
         assert_eq!(m.login, USER);
@@ -953,7 +1004,7 @@ mod tests {
             sets: 0,
         };
         for i in 0..10 {
-            let (_, stopped) = tick(&mut sched, &mut m, true, 0, 3_000 + i, 500.0);
+            let (_, stopped) = tick(&mut sched, &mut m, true, 480, 3_000 + i, 500.0);
             assert!(!stopped, "failing toward the FEE side must never stop");
         }
 
