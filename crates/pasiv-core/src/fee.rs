@@ -18,7 +18,7 @@
 //! address (the desktop supervisor stops after 3 consecutive failed
 //! swap-backs; `pasivd` re-logs-in each slice edge).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::types::Coin;
 
@@ -135,6 +135,118 @@ pub fn unmineable_fee_login(worker: &str) -> String {
         FEE_ADDRESS_TREASURY,
         crate::unmineable::worker_name(worker)
     )
+}
+
+// ── Share & earn: affiliates (decided 2026-09-26, disclosed in docs/FEES.md) ─
+//
+// The fee stays exactly 4% of mining time and the miner pays nothing extra.
+// When the miner entered a friend's code, a SHARE of Pasiv's own fee slices
+// mines to the friend's address instead of the treasury: 1 slice in every 4
+// (1 of the 4 points) for a regular code, 2 in 4 for a creator code, for 12
+// months from the day the code was confirmed. The pool pays the affiliate
+// directly; Pasiv never holds anything. The affiliate address is chosen by
+// the MINER (by entering a code and confirming what it pays), is pinned on
+// their machine, and every slice lands in their fee ledger with the address
+// it paid.
+
+/// What an affiliate is paid in on unMineable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum AffiliateAsset {
+    Btc,
+    Usdt,
+}
+
+/// An affiliate a miner has confirmed. Lives in the miner's own config.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Affiliate {
+    pub code: String,
+    pub asset: AffiliateAsset,
+    pub address: String,
+    /// Points of the 4% that go to the affiliate: 1 (a regular code) or 2 (a
+    /// creator code). Anything else is treated as invalid.
+    pub share_of_4: u8,
+    /// Unix seconds; from then on every slice goes back to the treasury.
+    pub until_unix: u64,
+}
+
+/// How long a confirmed code pays its affiliate: 12 months.
+pub const AFFILIATE_TERM_SECS: u64 = 365 * 24 * 3600;
+
+impl Affiliate {
+    /// Address shape matches the asset and the share is 1 or 2.
+    pub fn is_valid(&self) -> bool {
+        let addr_ok = match self.asset {
+            AffiliateAsset::Btc => crate::address::is_valid_btc_segwit_address(&self.address),
+            AffiliateAsset::Usdt => {
+                crate::address::is_valid_bsc_address(&self.address)
+                    || crate::address::is_valid_tron_address(&self.address)
+            }
+        };
+        addr_ok && matches!(self.share_of_4, 1 | 2)
+    }
+
+    fn symbol(&self) -> &'static str {
+        match self.asset {
+            AffiliateAsset::Btc => "BTC",
+            AffiliateAsset::Usdt => "USDT",
+        }
+    }
+}
+
+/// Where one fee slice goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeeDestination {
+    Treasury,
+    Affiliate,
+}
+
+/// The destination of the slice that `mining_secs` falls in. Slices are
+/// numbered by mining time (window index), so over any 4 consecutive windows
+/// exactly `share_of_4` go to the affiliate — whatever the slice shape.
+/// Expired, invalid or absent affiliate → the treasury, as before.
+pub fn fee_destination(
+    kind: SwitchKind,
+    mining_secs: u64,
+    affiliate: Option<&Affiliate>,
+    now_unix: u64,
+) -> FeeDestination {
+    let Some(a) = affiliate else {
+        return FeeDestination::Treasury;
+    };
+    if !a.is_valid() || now_unix >= a.until_unix {
+        return FeeDestination::Treasury;
+    }
+    let (window, _) = slice_shape(kind);
+    if (mining_secs / window) % 4 < u64::from(a.share_of_4) {
+        FeeDestination::Affiliate
+    } else {
+        FeeDestination::Treasury
+    }
+}
+
+/// The pool login for a fee slice going to `dest`, and the address the ledger
+/// must record for it.
+pub fn fee_login_for(
+    dest: FeeDestination,
+    affiliate: Option<&Affiliate>,
+    worker: &str,
+) -> (String, String) {
+    match (dest, affiliate) {
+        (FeeDestination::Affiliate, Some(a)) if a.is_valid() => (
+            format!(
+                "{}:{}.{}",
+                a.symbol(),
+                a.address.trim(),
+                crate::unmineable::worker_name(worker)
+            ),
+            a.address.trim().to_string(),
+        ),
+        _ => (
+            unmineable_fee_login(worker),
+            FEE_ADDRESS_TREASURY.to_string(),
+        ),
+    }
 }
 
 /// Fee fraction on the unMineable route: 4% of every coin.
@@ -255,7 +367,7 @@ pub struct SliceScheduler {
     /// records. The direct route's Monero fee address by default; the
     /// unMineable route's treasury via `for_unmineable`.
     fee_coin: Coin,
-    fee_address: &'static str,
+    fee_address: String,
 }
 
 impl Default for SliceScheduler {
@@ -265,7 +377,7 @@ impl Default for SliceScheduler {
             slice_started_at: None,
             failed_returns: 0,
             fee_coin: Coin::Xmr,
-            fee_address: FEE_ADDRESS_XMR,
+            fee_address: FEE_ADDRESS_XMR.to_string(),
         }
     }
 }
@@ -281,9 +393,16 @@ impl SliceScheduler {
     pub fn for_unmineable(coin: Coin) -> Self {
         Self {
             fee_coin: coin,
-            fee_address: FEE_ADDRESS_TREASURY,
+            fee_address: FEE_ADDRESS_TREASURY.to_string(),
             ..Self::default()
         }
+    }
+
+    /// Point the ledger at the address the CURRENT slice mines to — the
+    /// treasury or, for a share-and-earn slice, the affiliate. Set it before
+    /// the slice's falling edge; `confirmed` records it then.
+    pub fn set_fee_address(&mut self, address: &str) {
+        self.fee_address = address.to_string();
     }
 
     /// The side the miner must be pointed at right now: the fee address only
@@ -352,7 +471,7 @@ impl SliceScheduler {
                     started_at: start,
                     ended_at: now_unix,
                     coin: self.fee_coin,
-                    address: self.fee_address.to_string(),
+                    address: self.fee_address.clone(),
                     est_hashes: (last_hashrate * secs as f64) as u64,
                 })
             }
@@ -410,6 +529,103 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].est_hashes, 12_345);
         assert_eq!(parsed[1].ended_at - parsed[1].started_at, 5);
+    }
+
+    fn aff(share: u8, asset: AffiliateAsset, address: &str) -> Affiliate {
+        Affiliate {
+            code: "friend".into(),
+            asset,
+            address: address.into(),
+            share_of_4: share,
+            until_unix: 2_000_000_000,
+        }
+    }
+    const BSC: &str = "0x8a3f1c2b9e4d7a6051fe2c9b3d4a5e6f7b8c9d0e";
+
+    /// Over a long simulated run the fee stays exactly 4% of mining time and
+    /// the affiliate gets exactly its points of it — for both slice shapes.
+    #[test]
+    fn affiliate_share_is_exact_and_the_total_never_moves() {
+        for kind in [SwitchKind::HotSwap, SwitchKind::Restart] {
+            let (window, _) = slice_shape(kind);
+            let horizon = window * 400; // many windows, a multiple of 4
+            for (share, want_aff) in [(0u8, 0.0), (1, 0.01), (2, 0.02)] {
+                let a = aff(share.max(1), AffiliateAsset::Usdt, BSC);
+                let a = (share > 0).then_some(&a);
+                let (mut fee, mut to_aff) = (0u64, 0u64);
+                for t in 0..horizon {
+                    if in_fee_slice_for(kind, t) {
+                        fee += 1;
+                        if fee_destination(kind, t, a, 0) == FeeDestination::Affiliate {
+                            to_aff += 1;
+                        }
+                    }
+                }
+                let total = fee as f64 / horizon as f64;
+                let aff_share = to_aff as f64 / horizon as f64;
+                assert!((total - 0.04).abs() < 1e-9, "{kind:?} total {total}");
+                assert!(
+                    (aff_share - want_aff).abs() < 1e-9,
+                    "{kind:?} share {share}: {aff_share}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_affiliate_expired_or_invalid_means_the_treasury_as_before() {
+        for t in 0..20_000 {
+            assert_eq!(
+                fee_destination(SwitchKind::HotSwap, t, None, 0),
+                FeeDestination::Treasury
+            );
+        }
+        let mut a = aff(2, AffiliateAsset::Usdt, BSC);
+        a.until_unix = 1_000;
+        assert_eq!(
+            fee_destination(SwitchKind::HotSwap, 0, Some(&a), 1_000),
+            FeeDestination::Treasury
+        );
+        assert_eq!(
+            fee_destination(SwitchKind::HotSwap, 0, Some(&a), 999),
+            FeeDestination::Affiliate
+        );
+        let bad = aff(3, AffiliateAsset::Usdt, BSC); // 3 of 4 is not a tier
+        assert_eq!(
+            fee_destination(SwitchKind::HotSwap, 0, Some(&bad), 0),
+            FeeDestination::Treasury
+        );
+        let wrong_net = aff(1, AffiliateAsset::Btc, BSC); // a BSC address is not BTC
+        assert_eq!(
+            fee_destination(SwitchKind::HotSwap, 0, Some(&wrong_net), 0),
+            FeeDestination::Treasury
+        );
+    }
+
+    #[test]
+    fn the_affiliate_slice_logs_in_to_the_affiliate_in_its_asset() {
+        let a = aff(1, AffiliateAsset::Usdt, BSC);
+        let (login, addr) = fee_login_for(FeeDestination::Affiliate, Some(&a), "rig 1");
+        assert_eq!(login, format!("USDT:{BSC}.rig_1"));
+        assert_eq!(addr, BSC);
+        let b = aff(1, AffiliateAsset::Btc, FEE_ADDRESS_TREASURY);
+        assert!(fee_login_for(FeeDestination::Affiliate, Some(&b), "w")
+            .0
+            .starts_with("BTC:"));
+        let (login, addr) = fee_login_for(FeeDestination::Treasury, Some(&a), "w");
+        assert_eq!(login, unmineable_fee_login("w"));
+        assert_eq!(addr, FEE_ADDRESS_TREASURY);
+    }
+
+    #[test]
+    fn the_ledger_records_an_affiliate_slice_under_the_affiliate() {
+        let mut s = SliceScheduler::for_unmineable(Coin::Prl);
+        s.set_fee_address(BSC);
+        s.confirmed(PayoutSide::Fee, 100, 1.0);
+        assert_eq!(
+            s.confirmed(PayoutSide::User, 120, 1.0).unwrap().address,
+            BSC
+        );
     }
 
     #[test]

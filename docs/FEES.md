@@ -8,6 +8,23 @@ Pasiv makes money **only when you do.** The mechanics below are documented in
 full — and, since this repository exists, implemented in the open — so anyone
 can see exactly what they pay and confirm it against the app's own fee ledger.
 
+> **Revision 2026-09-26 (Pasiv 0.5.5): Share & earn.** Changed, in the open,
+> as never-list item 3 requires:
+> 1. **The fee is still exactly 4% of mining time, and you pay nothing
+>    extra.** If you set up Pasiv with a friend's code, part of **Pasiv's own
+>    4%** goes to that friend: 1 fee slice in every 4 (1 of the 4 points) for
+>    a regular code, 2 in 4 for a creator code, for 12 months from the day you
+>    confirmed it. The rest goes to Pasiv's treasury as before.
+> 2. **The friend is paid by the pool, never by Pasiv.** Their slices mine
+>    straight to their own BTC or USDT address on unMineable, exactly like
+>    Pasiv's treasury slices do. Pasiv holds nothing (never-list item 7).
+> 3. **You choose it, you see it, you can remove it.** A code is applied only
+>    when you enter it and confirm the address it pays; that address is then
+>    pinned on your machine (nothing remote can change it — never-list item
+>    8). Every such slice is in your fee ledger with the address it paid.
+>    Removing the code sends every slice back to the treasury at once.
+>    ([`fee_destination`](../crates/pasiv-core/src/fee.rs))
+>
 > **Revision 2026-09-25 (Pasiv 0.5.0).** Changed, in the open, as never-list
 > item 3 requires:
 > 1. **Payouts in USDT by default, via unMineable.** New installs mine on
@@ -52,6 +69,7 @@ you to discover.
 |---|---|---|---|
 | unMineable pool fee | 0.75% | unMineable (the default route) | 1%, lowered to 0.75% by Pasiv's referral code in your login |
 | Pasiv's referral | 0.25% | Paid **to Pasiv by unMineable, out of unMineable's own fee** | Not taken from your earnings; disclosed because Pasiv benefits |
+| Share & earn (optional) | 1 or 2 of Pasiv's 4 points | Paid **to the friend whose code you entered, out of Pasiv's 4%** | Not an extra fee — it's part of the 4%; only if you entered a code; ends after 12 months |
 | Pool fee (direct route) | ~1% | Your chosen pool (MoneroOcean, LuckyPool, …) | Per that pool's own published terms |
 | SRBMiner dev fee | 2% | The SRBMiner-Multi developers | Built into the GPU mining engine (Pearl) |
 | XMRig dev donation | 1% | The XMRig developers | Built into the mining engine Pasiv drives |
