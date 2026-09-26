@@ -139,6 +139,11 @@ pub enum Input {
     GovernorPause(PauseReason),
     #[allow(dead_code)]
     GovernorResume,
+    /// Resume a lane the governor PARKED rather than paused in place: a miner
+    /// with no in-place pause (SRBMiner) is stopped for Game Mode and has to
+    /// be launched again, so it comes back through warm-up, not straight to
+    /// Mining — "Mining" is only ever entered by real hashes.
+    GovernorRelaunch,
     // watchdog verdicts
     WatchdogRestart,
 }
@@ -171,6 +176,9 @@ pub fn transition(state: &MinerState, input: &Input) -> Option<MinerState> {
         (S::Stopping, I::BackoffExhausted(kind)) => Some(S::Error { kind: *kind }),
         (S::Mining, I::GovernorPause(reason)) => Some(S::Paused { reason: *reason }),
         (S::Paused { .. }, I::GovernorResume) => Some(S::Mining),
+        (S::Paused { .. }, I::GovernorRelaunch) => Some(S::Starting {
+            phase: WarmPhase::Spawning,
+        }),
         (S::Starting { .. } | S::Mining, I::MinerExitedRetrying) => Some(S::Starting {
             phase: WarmPhase::Spawning,
         }),
@@ -439,6 +447,23 @@ mod tests {
     }
 
     #[test]
+    fn a_parked_lane_relaunches_through_warm_up_only_from_paused() {
+        let paused = S::Paused {
+            reason: PauseReason::Fullscreen,
+        };
+        assert_eq!(
+            transition(&paused, &I::GovernorRelaunch),
+            Some(S::Starting {
+                phase: WarmPhase::Spawning
+            })
+        );
+        // From anything else it means nothing — never a way to self-start.
+        for s in [S::Mining, S::Stopping, idle()] {
+            assert_eq!(transition(&s, &I::GovernorRelaunch), None, "{s:?}");
+        }
+    }
+
+    #[test]
     fn watchdog_restart_only_fires_from_mining() {
         assert_eq!(transition(&idle(), &I::WatchdogRestart), None);
         assert_eq!(
@@ -535,6 +560,7 @@ mod tests {
             I::GovernorPause(PauseReason::Battery),
             I::GovernorPause(PauseReason::Thermal),
             I::GovernorResume,
+            I::GovernorRelaunch,
             I::WatchdogRestart,
         ]
     }
