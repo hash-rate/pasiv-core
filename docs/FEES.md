@@ -8,6 +8,30 @@ Pasiv makes money **only when you do.** The mechanics below are documented in
 full — and, since this repository exists, implemented in the open — so anyone
 can see exactly what they pay and confirm it against the app's own fee ledger.
 
+> **Revision 2026-09-28 (Pasiv 0.5.9): Share & earn, made honest.** Changed,
+> in the open, as never-list item 3 requires:
+> 1. **A friend's share is counted over the life of the install, not per
+>    session.** The 1-in-4 (or 2-in-4) rule is applied to a running count of
+>    fee slices your machine has confirmed — it no longer starts from zero at
+>    every launch. Before this a PC that is switched off daily almost never
+>    reached the friend's slice on the GPU miner (it was the last of every
+>    four, and four GPU windows take 16 h). Slices still sit at the end of
+>    their window, so no session ever pays more than 4%.
+> 2. **Codes pay only on the unMineable (USDT) payout route.** A friend's
+>    address is BTC or USDT on unMineable; a direct Monero payout and a
+>    headless `pasivd` node mine straight to Monero pools and cannot pay it, so
+>    there every slice goes to Pasiv's treasury. The app now says so and
+>    doesn't take a code on the direct route.
+> 3. **What a code pays is decided by the server, not the screen.** The desktop
+>    asks Pasiv's backend what a code is (address, asset, regular or creator)
+>    when you confirm it; the settings screen can no longer set those. Once a
+>    day it re-checks the code: a removed code is unpinned, a tier change is
+>    applied. Your own code is refused on the server as well as locally.
+> 4. **Uses are counted per machine**, so "machines using your code" cannot be
+>    inflated by repeat calls. And note the trade-off we accept: a code is a
+>    public label that resolves to a payout address — treat it like a public
+>    tip address, because anyone can look one up.
+>
 > **Revision 2026-09-26 (Pasiv 0.5.5): Share & earn.** Changed, in the open,
 > as never-list item 3 requires:
 > 1. **The fee is still exactly 4% of mining time, and you pay nothing
@@ -120,6 +144,11 @@ The fee is **time-sliced hashrate**, identical in mechanism to XMRig's dev fee
   [`in_fee_slice_for`](../crates/pasiv-core/src/fee.rs)): a pure function of
   time spent mining, which is what makes the percentage structural rather
   than promised.
+- **A friend's slices** (Share & earn) are the last 1 or 2 of every group of
+  4 fee slices — counted over the life of the install, persisted on disk, so
+  a machine that mines in short sessions still hands its friend exactly their
+  share over time (2026-09-28). The friend's login is used only on the
+  unMineable route; direct-route and `pasivd` slices all go to the treasury.
 
 **Where to read it:**
 - The schedule, the compile-time **fee addresses**, and the ledger format:
