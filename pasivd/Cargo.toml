@@ -1,12 +1,12 @@
 [package]
 name = "pasivd"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 description = "Headless Pasiv node: CPU-mines Monero paid to your address (USDT via unMineable, or XMR direct), pairs with your account via a claim code, controllable from the Pasiv companion app."
 license = "GPL-3.0-only"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "signal", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

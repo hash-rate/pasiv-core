@@ -92,25 +92,67 @@ pub fn parse_summary(v: &serde_json::Value) -> MinerStats {
     }
 }
 
-/// The pool login XMRig is ACTUALLY mining with, from a `/1/config` response —
-/// the ground truth the level-triggered fee reconcile compares against.
+/// The primary pool's login (`pools[0].user`) from a `/1/config` response.
+///
+/// Kept for callers that only ever configure one pool. With a backup pool
+/// present this is NOT the ground truth on its own — XMRig fails over
+/// silently, and the login on the pool it fell back to is what earns — so
+/// the fee reconcile should use [`all_pools_use`] instead, which is exact
+/// whichever entry is live.
 pub fn user_from_config(v: &serde_json::Value) -> Option<String> {
     Some(v.get("pools")?.get(0)?.get("user")?.as_str()?.to_string())
 }
 
-/// A `/1/config` document with the first pool's login replaced — the body the
-/// payout hot-swap PUTs back. XMRig re-logins to the same pool (algo
-/// unchanged, RandomX dataset kept), so the cost is a sub-second reconnect.
+/// Every pool login in a `/1/config` response, in `pools` order. Empty when
+/// the document has no pools. A pool entry without a `user` is skipped, so
+/// the length can be shorter than `pools` — compare with [`all_pools_use`]
+/// rather than counting.
+pub fn users_from_config(v: &serde_json::Value) -> Vec<String> {
+    v.get("pools")
+        .and_then(|p| p.as_array())
+        .map(|pools| {
+            pools
+                .iter()
+                .filter_map(|p| p.get("user")?.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Is EVERY pool in `config` logged in as `user`? This is what the
+/// level-triggered fee reconcile asks: "is the miner, on whichever pool it
+/// is currently connected to, paying the side I want?" — true only when all
+/// entries agree, false for a config with no pools (nothing is mining to
+/// `user`) or with any entry missing a `user`.
+pub fn all_pools_use(config: &serde_json::Value, user: &str) -> bool {
+    match config.get("pools").and_then(|p| p.as_array()) {
+        Some(pools) if !pools.is_empty() => pools
+            .iter()
+            .all(|p| p.get("user").and_then(|u| u.as_str()) == Some(user)),
+        _ => false,
+    }
+}
+
+/// A `/1/config` document with EVERY pool's login replaced — the body the
+/// payout hot-swap PUTs back. All entries, not just `pools[0]`: XMRig fails
+/// over to a backup pool on its own and keeps that pool's login, so a swap
+/// that touched only the primary would leave a failed-over miner paying the
+/// wrong side for the rest of the session, and the reconcile reading
+/// `pools[0]` back would never notice. XMRig re-logins to the same pool
+/// (algo unchanged, RandomX dataset kept), so the cost is a sub-second
+/// reconnect. Nothing but `user` is touched on any entry.
 pub fn config_with_user(
     mut config: serde_json::Value,
     address: &str,
 ) -> Result<serde_json::Value, &'static str> {
-    match config.get_mut("pools").and_then(|p| p.get_mut(0)) {
-        Some(pool) => {
-            pool["user"] = serde_json::Value::String(address.to_string());
+    match config.get_mut("pools").and_then(|p| p.as_array_mut()) {
+        Some(pools) if !pools.is_empty() => {
+            for pool in pools.iter_mut() {
+                pool["user"] = serde_json::Value::String(address.to_string());
+            }
             Ok(config)
         }
-        None => Err("xmrig config has no pool"),
+        _ => Err("xmrig config has no pool"),
     }
 }
 
@@ -180,6 +222,47 @@ mod tests {
         assert_eq!(user_from_config(&swapped).as_deref(), Some("4new"));
         assert_eq!(swapped["pools"][0]["url"], "p:1", "everything else kept");
         assert!(config_with_user(serde_json::json!({}), "4new").is_err());
+        assert!(config_with_user(serde_json::json!({ "pools": [] }), "4new").is_err());
+    }
+
+    /// With a backup pool configured, XMRig fails over silently and keeps
+    /// THAT pool's login — so the swap must rewrite every entry, and the
+    /// reconcile must ask "do all pools agree?" rather than read `pools[0]`.
+    #[test]
+    fn the_swap_covers_every_pool_and_the_reconcile_checks_all_of_them() {
+        let cfg = serde_json::json!({ "pools": [
+            { "user": "4old", "url": "primary:1", "pass": "x" },
+            { "user": "4old", "url": "backup:2", "tls": true },
+        ]});
+        assert_eq!(users_from_config(&cfg), vec!["4old", "4old"]);
+        assert!(all_pools_use(&cfg, "4old"));
+        assert!(!all_pools_use(&cfg, "4new"));
+
+        let swapped = config_with_user(cfg, "4new").unwrap();
+        assert_eq!(users_from_config(&swapped), vec!["4new", "4new"]);
+        assert!(all_pools_use(&swapped, "4new"));
+        // pools[0] still answers the single-pool question the desktop asks.
+        assert_eq!(user_from_config(&swapped).as_deref(), Some("4new"));
+        // Only `user` moved; every other field on every entry is intact.
+        assert_eq!(swapped["pools"][0]["url"], "primary:1");
+        assert_eq!(swapped["pools"][0]["pass"], "x");
+        assert_eq!(swapped["pools"][1]["url"], "backup:2");
+        assert_eq!(swapped["pools"][1]["tls"], true);
+
+        // A half-swapped config (the failure the old pools[0]-only swap could
+        // leave behind) is NOT "on the user": the reconcile must correct it.
+        let half = serde_json::json!({ "pools": [
+            { "user": "4new", "url": "primary:1" },
+            { "user": "4old", "url": "backup:2" },
+        ]});
+        assert!(!all_pools_use(&half, "4new"));
+        assert!(!all_pools_use(&half, "4old"));
+        // And a pool entry with no login at all can't be said to pay anyone.
+        let missing = serde_json::json!({ "pools": [{ "url": "p:1" }] });
+        assert!(!all_pools_use(&missing, "4new"));
+        assert!(users_from_config(&missing).is_empty());
+        assert!(!all_pools_use(&serde_json::json!({ "pools": [] }), "4new"));
+        assert!(!all_pools_use(&serde_json::json!({}), "4new"));
     }
 
     #[test]

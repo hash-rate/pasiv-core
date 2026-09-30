@@ -21,8 +21,8 @@
 //!   - the miner binary is fetched from xmrig's official release and
 //!     sha256-verified against a compile-time pin before first run
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use pasiv_core::address::is_valid_xmr_address;
 use pasiv_core::fee::{self, PayoutSide, SliceScheduler, SwapFailure, FEE_ADDRESS_XMR};
@@ -32,32 +32,166 @@ mod ui;
 mod update;
 mod xmrig;
 use doctor::cmd_doctor;
-use xmrig::{ensure_xmrig, spawn_xmrig, xmrig_current_user, xmrig_set_user, xmrig_summary, Miner};
+use xmrig::{ensure_xmrig, spawn_xmrig, xmrig_pools_on, xmrig_set_user, xmrig_summary, Miner};
+
+/// The HTTP client every cloud call shares. Both timeouts are load-bearing:
+/// a `reqwest::Client::new()` has none, so a stalled TLS handshake or a
+/// half-open connection to the edge function could hold a request forever —
+/// and before 0.1.9 that request ran on the same task that respawns the
+/// miner and ends fee slices. Downloads that legitimately take longer (the
+/// xmrig tarball, a staged update) override the total per request.
+pub(crate) fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Atomic, owner-only file write. The bytes go to a temp file in the SAME
+/// directory (created 0600 before anything is written), are fsync'd, and are
+/// renamed over `path` — so a crash or a full disk mid-write leaves the old
+/// file intact, never a truncated one. Returns `Ok(false)` without touching
+/// the disk when `path` already holds exactly `bytes`.
+///
+/// The truncate-then-write it replaces had a window in which the file was
+/// empty: a power cut there cost the node its identity (device id + secret)
+/// and the payout it needs to mine without the cloud.
+pub(crate) fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<bool, String> {
+    use std::io::Write;
+    if std::fs::read(path).is_ok_and(|cur| cur == bytes) {
+        return Ok(false);
+    }
+    let dir = path.parent().filter(|p| !p.as_os_str().is_empty());
+    if let Some(dir) = dir {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "config".into());
+    let tmp = path.with_file_name(format!(".{name}.tmp-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let result = (|| {
+        let mut f = opts
+            .open(&tmp)
+            .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        f.write_all(bytes).map_err(|e| e.to_string())?;
+        f.sync_all().map_err(|e| e.to_string())?;
+        drop(f);
+        std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))?;
+        // The rename is durable only once the directory entry is: fsync the
+        // directory too (best-effort — not every filesystem allows it).
+        if let Some(dir) = dir {
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+        }
+        Ok(true)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
 
 /// Write the device config. It holds the device secret — a bearer credential
 /// for this node's cloud identity — so it must never be world-readable, which
-/// is what `std::fs::write` produces under a default umask.
-fn write_config(path: &std::path::Path, cfg: &DeviceConfig) -> Result<(), String> {
+/// is what `std::fs::write` produces under a default umask. Atomic (see
+/// [`write_private_atomic`]), and afterwards handed to the service user so
+/// the sandboxed unit can read what root wrote at claim time.
+fn write_config(path: &Path, cfg: &DeviceConfig) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(cfg).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|e| format!("write {}: {e}", path.display()))?;
-        f.write_all(&bytes).map_err(|e| e.to_string())?;
-        // Not needless: the cfg(not(unix)) tail below is stripped on unix,
-        // so this return is what ends the unix body.
-        #[allow(clippy::needless_return)]
-        return Ok(());
+    write_private_atomic(path, &bytes)?;
+    hand_to_service_user(path);
+    Ok(())
+}
+
+/// The name of the static system user the unit runs as (install.sh).
+pub(crate) const SERVICE_USER: &str = "pasivd";
+
+/// `pasivd claim` runs as root and writes the config 0600; the service runs
+/// as [`SERVICE_USER`] and has to read it. Hand the file over when that user
+/// exists. Best-effort and silent otherwise (a non-systemd or non-root
+/// install, or a caller that isn't root — chown then fails with EPERM and
+/// the file is already readable by whoever wrote it).
+#[cfg(unix)]
+fn hand_to_service_user(path: &Path) {
+    let Some((uid, gid)) = std::fs::read_to_string("/etc/passwd")
+        .ok()
+        .and_then(|p| passwd_ids(&p, SERVICE_USER))
+    else {
+        return;
+    };
+    let _ = std::os::unix::fs::chown(path, Some(uid), Some(gid));
+}
+
+#[cfg(not(unix))]
+fn hand_to_service_user(_path: &Path) {}
+
+/// Pure: `(uid, gid)` for `user` out of /etc/passwd text.
+pub(crate) fn passwd_ids(passwd: &str, user: &str) -> Option<(u32, u32)> {
+    passwd.lines().find_map(|l| {
+        let mut f = l.split(':');
+        if f.next()? != user {
+            return None;
+        }
+        f.next()?; // password field
+        Some((
+            f.next()?.trim().parse().ok()?,
+            f.next()?.trim().parse().ok()?,
+        ))
+    })
+}
+
+/// The payout the node last heard from the account, kept in the STATE
+/// directory — the one place the sandboxed service can write (`/etc` is
+/// read-only under `ProtectSystem=strict`, so the config file itself is
+/// root's, written at claim time). This is what lets a node keep mining when
+/// the cloud is down or the device was revoked: the address is the owner's
+/// own, heard from their account, and mining to it costs nobody anything.
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
+pub(crate) struct PayoutCache {
+    #[serde(default)]
+    payout_xmr: Option<String>,
+    #[serde(default)]
+    payout_usdt: Option<String>,
+}
+
+pub(crate) fn payout_cache_path() -> PathBuf {
+    data_dir().join("payout.json")
+}
+
+fn read_payout_cache() -> Option<PayoutCache> {
+    serde_json::from_str(&std::fs::read_to_string(payout_cache_path()).ok()?).ok()
+}
+
+/// Atomic and only when changed; failure is logged, never fatal — a node
+/// with a read-only state directory still mines, it just can't survive a
+/// cloud outage across a restart.
+fn save_payout_cache(cache: &PayoutCache) {
+    let Ok(bytes) = serde_json::to_vec_pretty(cache) else {
+        return;
+    };
+    if let Err(e) = write_private_atomic(&payout_cache_path(), &bytes) {
+        eprintln!("could not cache the payout locally: {e}");
     }
-    #[cfg(not(unix))]
-    std::fs::write(path, bytes).map_err(|e| e.to_string())
+}
+
+/// The payout to start from: the state-dir cache when it exists (it is at
+/// least as new as the claim), else what `pasivd claim` wrote.
+pub(crate) fn cached_payout(cfg: &DeviceConfig) -> PayoutCache {
+    read_payout_cache().unwrap_or_else(|| PayoutCache {
+        payout_xmr: cfg.payout_xmr.clone(),
+        payout_usdt: cfg.payout_usdt.clone(),
+    })
 }
 
 // The Pasiv cloud + pool are DEFAULTS, overridable by environment so a fork —
@@ -222,7 +356,7 @@ pub(crate) async fn api(
 // ---------------------------------------------------------------- claim ----
 
 async fn cmd_claim() -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let started = api(
         &client,
         serde_json::json!({
@@ -265,10 +399,10 @@ async fn cmd_claim() -> Result<(), String> {
                 payout_usdt: payout_usdt.clone(),
             };
             let path = config_path();
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
             write_config(&path, &cfg)?;
+            // A re-claim binds the node to whoever approved THIS code; a
+            // payout cached from the previous owner must not outlive that.
+            let _ = std::fs::remove_file(payout_cache_path());
             println!();
             println!(
                 "  {} {} — config saved to {}",
@@ -421,47 +555,198 @@ fn build_snapshot(state: &str, hashrate: f64, rate_per_kh: Option<f64>) -> serde
 }
 
 // ------------------------------------------------------------------ run ----
+//
+// Two tasks, one rule: the miner loop never waits on the network.
+//
+//   miner loop  — spawns/respawns xmrig, reads its local stats, drives the
+//                 fee-slice reconcile, applies remote commands. Every await
+//                 in it is loopback with a 3 s timeout.
+//   cloud link  — pushes state, receives commands, re-polls the payout,
+//                 checks for updates, turns on unMineable auto pay. Every
+//                 request is bounded by `http_client`'s timeouts, and a slow
+//                 one delays the NEXT push, never a fee-slice end.
+//
+// They talk over channels: the miner loop publishes a `MinerReport` (watch —
+// the link reads the latest whenever it pushes); the link sends `CloudEvent`s
+// (commands, a changed payout, a staged update); the miner loop answers
+// commands with `Completion`s the link posts back.
+
+/// What the cloud link publishes about the miner (the latest wins).
+#[derive(Clone)]
+struct MinerReport {
+    state: &'static str,
+    hashrate: f64,
+    accepted: u64,
+    rejected: u64,
+    mining_secs: u64,
+}
+
+impl Default for MinerReport {
+    fn default() -> Self {
+        MinerReport {
+            state: "starting",
+            hashrate: 0.0,
+            accepted: 0,
+            rejected: 0,
+            mining_secs: 0,
+        }
+    }
+}
+
+/// From the cloud link to the miner loop.
+enum CloudEvent {
+    /// A remote command to apply (start / stop / anything else = unsupported).
+    Command { id: String, action: String },
+    /// The account's payout as the hourly poll last heard it.
+    Payout(PayoutCache),
+    /// A signed update is staged: stop the miner and exit into it.
+    RestartInto(String),
+}
+
+/// A command's outcome, for the link to post back as `complete`.
+struct Completion {
+    id: String,
+    ok: bool,
+    result: String,
+}
+
+/// What a `poll` said.
+enum Poll {
+    Claimed(PayoutCache),
+    /// The cloud answered but this device is not (or no longer) claimed.
+    NotClaimed(String),
+}
+
+async fn poll_payout(client: &reqwest::Client, cfg: &DeviceConfig) -> Result<Poll, String> {
+    let v = api(
+        client,
+        serde_json::json!({"action":"poll","device_id":cfg.device_id,"secret":cfg.secret}),
+    )
+    .await?;
+    if v["status"] != "claimed" {
+        return Ok(Poll::NotClaimed(
+            v["status"].as_str().unwrap_or("unknown").to_string(),
+        ));
+    }
+    Ok(Poll::Claimed(PayoutCache {
+        payout_xmr: v["payout_xmr"].as_str().map(str::to_string),
+        payout_usdt: v["payout_usdt"].as_str().map(str::to_string),
+    }))
+}
+
+fn target_for(payout: &PayoutCache, host: &str) -> Option<MiningTarget> {
+    target(
+        payout.payout_usdt.as_deref(),
+        payout.payout_xmr.as_deref(),
+        host,
+    )
+}
+
+/// How long until the next poll after this one: an hour once the cloud
+/// answers (claimed or not — a revoked device is re-checked hourly and warned
+/// about hourly), a minute while it does not.
+const POLL_OK: Duration = Duration::from_secs(3600);
+const POLL_RETRY: Duration = Duration::from_secs(60);
+
+/// Startup: one poll, then mine. The cloud is consulted, never obeyed into
+/// silence — before 0.1.9 a failed poll here was `?`, so an edge-function
+/// outage, a TLS hiccup, or a revoked device made `pasivd run` exit 1 and
+/// systemd restart it forever without a hash. Now: any failure logs loudly
+/// and, if a payout is cached locally, mining starts on it; the cloud link
+/// keeps re-polling. Only a node with NO payout anywhere waits — there is
+/// nothing to mine to.
+///
+/// Returns the target and how long the link should wait before its next poll.
+async fn startup_target(
+    client: &reqwest::Client,
+    cfg: &DeviceConfig,
+    host: &str,
+) -> (MiningTarget, PayoutCache, Duration) {
+    let mut payout = cached_payout(cfg);
+    let mut warned_no_payout = false;
+    loop {
+        let next = match poll_payout(client, cfg).await {
+            Ok(Poll::Claimed(fresh)) => {
+                if fresh != payout {
+                    save_payout_cache(&fresh);
+                    payout = fresh;
+                }
+                if let Some(t) = target_for(&payout, host) {
+                    return (t, payout, POLL_OK);
+                }
+                if !warned_no_payout {
+                    eprintln!(
+                        "no payout on the account yet — set one in the Pasiv app; checking every 60s"
+                    );
+                    warned_no_payout = true;
+                }
+                POLL_RETRY
+            }
+            Ok(Poll::NotClaimed(status)) => {
+                if let Some(t) = target_for(&payout, host) {
+                    eprintln!(
+                        "warning: the cloud reports this device as {status} — mining on the \
+                         cached payout anyway; re-claim it from the companion to restore remote control"
+                    );
+                    return (t, payout, POLL_OK);
+                }
+                eprintln!("device is {status} and no payout is cached — run `pasivd claim`; retrying in 60s");
+                POLL_RETRY
+            }
+            Err(e) => {
+                if let Some(t) = target_for(&payout, host) {
+                    eprintln!("warning: cloud unreachable ({e}) — mining on the cached payout");
+                    return (t, payout, POLL_RETRY);
+                }
+                eprintln!("cloud unreachable ({e}) and no payout cached yet — retrying in 60s");
+                POLL_RETRY
+            }
+        };
+        tokio::time::sleep(next).await;
+    }
+}
+
+/// Is this build proven good enough to keep? Judged by WORK, not by the
+/// cloud: five minutes of hashing, or any accepted share, in this process.
+/// A push that succeeded used to count — so a build whose miner never hashed
+/// stayed "healthy" as long as the uplink worked, and one that mined
+/// perfectly while the cloud was down was abandoned after three starts. A
+/// node the owner has stopped can't hash, so it counts as healthy once it
+/// has simply stayed up ten minutes without crash-looping.
+fn build_checked_in(hash_secs: u64, accepted: u64, want_mining: bool, uptime_secs: u64) -> bool {
+    hash_secs >= 300 || accepted > 0 || (!want_mining && uptime_secs >= 600)
+}
+
+/// Consecutive local stats failures after which the last hashrate is no
+/// longer believed: two misses (10 s) of a 3 s-timeout loopback call means
+/// xmrig is wedged or gone, and "still mining at N H/s" would be a lie the
+/// fleet view repeats for as long as it lasts.
+const STATS_MISSES_UNKNOWN: u32 = 2;
+
+/// How often a missing/failed xmrig binary is re-fetched.
+const ENSURE_RETRY: Duration = Duration::from_secs(600);
 
 async fn cmd_run() -> Result<(), String> {
     let path = config_path();
     let raw = std::fs::read_to_string(&path)
         .map_err(|_| format!("no config at {} — run `pasivd claim` first", path.display()))?;
-    let mut cfg: DeviceConfig = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let cfg: DeviceConfig = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let host = hostname();
+    let client = http_client();
 
-    let client = reqwest::Client::new();
+    let (mut tgt, mut payout, first_poll_in) = startup_target(&client, &cfg, &host).await;
 
-    // Payout must exist before the first hash — refresh from the account.
-    loop {
-        let v = api(
-            &client,
-            serde_json::json!({"action":"poll","device_id":cfg.device_id,"secret":cfg.secret}),
-        )
-        .await?;
-        if v["status"] != "claimed" {
-            return Err(format!("device not claimed (status: {})", v["status"]));
+    // The miner binary, fetched and pinned. A failure here is no longer
+    // fatal: the loop below retries every ENSURE_RETRY, so a node installed
+    // while the release host is unreachable starts mining when it is back.
+    let mut bin: Option<PathBuf> = match ensure_xmrig(&client).await {
+        Ok(b) => Some(b),
+        Err(e) => {
+            eprintln!("{e} — retrying every {}s", ENSURE_RETRY.as_secs());
+            None
         }
-        cfg.payout_xmr = v["payout_xmr"].as_str().map(str::to_string);
-        cfg.payout_usdt = v["payout_usdt"].as_str().map(str::to_string);
-        if target(
-            cfg.payout_usdt.as_deref(),
-            cfg.payout_xmr.as_deref(),
-            &hostname(),
-        )
-        .is_some()
-        {
-            let _ = write_config(&path, &cfg);
-            break;
-        }
-        eprintln!("no payout on the account yet — set one in the Pasiv app; retrying in 60s");
-        tokio::time::sleep(Duration::from_secs(60)).await;
-    }
-    let tgt = target(
-        cfg.payout_usdt.as_deref(),
-        cfg.payout_xmr.as_deref(),
-        &hostname(),
-    )
-    .expect("checked in the loop above");
-    let bin = ensure_xmrig(&client).await?;
+    };
+    let mut last_ensure = Instant::now();
 
     let mut miner: Option<Miner> = None;
     // A headless node's default job is to mine — unless its owner stopped it.
@@ -473,10 +758,14 @@ async fn cmd_run() -> Result<(), String> {
     // The shared enforcement state machine — fresh per spawn (a respawned
     // miner always comes up on the user's address).
     let mut sched = tgt.scheduler();
-    let mut tick: u64 = 0;
     let mut last_hashrate = 0.0_f64;
+    let mut stats_misses: u32 = 0;
     let mut accepted: u64 = 0;
     let mut rejected: u64 = 0;
+    // Rollback health (update.rs): judged by work done in this process.
+    let started = Instant::now();
+    let mut hash_secs: u64 = 0;
+    let mut checked_in = false;
 
     // Detect the hardware ONCE — the CPU cannot change under a running process,
     // and detect() shells out to read the model — then send it with every push.
@@ -489,51 +778,127 @@ async fn cmd_run() -> Result<(), String> {
     let hardware =
         serde_json::to_value(pasiv_core::hardware::detect()).unwrap_or(serde_json::Value::Null);
 
-    // Earnings estimate: a separate client because CoinGecko 403s reqwest's
-    // default agent, and a cached rate refreshed ~every 10 min (the desktop
-    // re-ranks on a similar cadence) — the per-tick hashrate is what varies,
-    // not the network rate.
-    let rate_client = reqwest::Client::builder()
-        .user_agent(concat!("pasivd/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-    let mut rate_per_kh: Option<f64> = None;
+    let (report_tx, report_rx) = tokio::sync::watch::channel(MinerReport::default());
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel::<CloudEvent>();
+    let (done_tx, done_rx) = tokio::sync::mpsc::unbounded_channel::<Completion>();
+    tokio::spawn(cloud_link(CloudLink {
+        client: client.clone(),
+        cfg: cfg.clone(),
+        host: host.clone(),
+        hardware,
+        unmineable_usdt: tgt.unmineable.then(|| payout.payout_usdt.clone()).flatten(),
+        first_poll_in,
+        report_rx,
+        events_tx,
+        done_rx,
+    }));
 
-    println!("{VERSION} — node {} → {}", hostname(), tgt.pool);
+    println!("{VERSION} — node {host} → {}", tgt.pool);
 
     loop {
         tokio::time::sleep(Duration::from_secs(5)).await;
-        tick += 1;
 
-        // Refresh the earnings rate once at startup and ~every 10 min after.
-        // A failure keeps the last known rate (or none) and retries next cycle.
-        if tick == 1 || tick.is_multiple_of(120) {
-            if let Some(r) = fetch_xmr_rate_per_kh(&rate_client).await {
-                rate_per_kh = Some(r);
+        // Apply whatever the cloud link delivered since the last tick.
+        while let Ok(ev) = events_rx.try_recv() {
+            match ev {
+                CloudEvent::Command { id, action } => {
+                    println!("remote command: {action}");
+                    let (ok, result) = match action.as_str() {
+                        "start" => {
+                            want_mining = true;
+                            let _ = std::fs::remove_file(&stopped_flag);
+                            (true, "start ok".to_string())
+                        }
+                        "stop" => {
+                            want_mining = false;
+                            let _ = std::fs::write(&stopped_flag, b"");
+                            (true, "stop ok".to_string())
+                        }
+                        other => (false, format!("unsupported command: {other}")),
+                    };
+                    let _ = done_tx.send(Completion { id, ok, result });
+                }
+                CloudEvent::Payout(fresh) => {
+                    // The account's payout moved. A payout REMOVED from the
+                    // account is not followed mid-run (the address in hand is
+                    // still the owner's own); it takes effect at the next
+                    // start, exactly as before.
+                    if fresh == payout {
+                        continue;
+                    }
+                    let Some(new_tgt) = target_for(&fresh, &host) else {
+                        eprintln!(
+                            "warning: the account no longer has a payout — still mining on the \
+                             one this node last heard; set one in the Pasiv app"
+                        );
+                        continue;
+                    };
+                    save_payout_cache(&fresh);
+                    payout = fresh;
+                    if new_tgt != tgt {
+                        println!(
+                            "payout changed on the account — switching to {} → {}…",
+                            new_tgt.pool,
+                            new_tgt.user.chars().take(16).collect::<String>()
+                        );
+                        tgt = new_tgt;
+                        if let Some(m) = &mut miner {
+                            let _ = m.child.kill().await;
+                        }
+                        miner = None; // respawns next tick on the new target
+                        last_hashrate = 0.0;
+                    }
+                }
+                CloudEvent::RestartInto(version) => {
+                    restart_for_update(&mut miner, &version).await;
+                }
             }
         }
 
         // Reconcile desired vs actual miner state.
         match (&mut miner, want_mining) {
             (None, true) => {
-                let token: String = {
-                    use rand::Rng;
-                    let mut r = rand::thread_rng();
-                    (0..32)
-                        .map(|_| format!("{:x}", r.gen_range(0..16)))
-                        .collect()
-                };
-                match spawn_xmrig(&bin, &tgt.pool, &tgt.user, &token) {
-                    Ok(child) => {
-                        println!(
-                            "miner started ({} → {}…)",
-                            tgt.pool,
-                            tgt.user.chars().take(16).collect::<String>()
-                        );
-                        sched = tgt.scheduler();
-                        miner = Some(Miner { child, token });
+                // No usable binary (the release host was unreachable at start,
+                // or the file vanished): re-fetch, rate-limited so a long
+                // outage never hammers it. The download is the one network
+                // call on this task, and only ever runs while no miner exists
+                // — there is no fee slice to stall.
+                if bin.is_none() && last_ensure.elapsed() >= ENSURE_RETRY {
+                    last_ensure = Instant::now();
+                    match ensure_xmrig(&client).await {
+                        Ok(b) => bin = Some(b),
+                        Err(e) => eprintln!("{e} — retrying in {}s", ENSURE_RETRY.as_secs()),
                     }
-                    Err(e) => eprintln!("{e}"),
+                }
+                // No binary yet: nothing to spawn this tick; the report below
+                // still goes out so the fleet sees "starting", not a stale row.
+                if let Some(b) = &bin {
+                    let token: String = {
+                        use rand::Rng;
+                        let mut r = rand::thread_rng();
+                        (0..32)
+                            .map(|_| format!("{:x}", r.gen_range(0..16)))
+                            .collect()
+                    };
+                    match spawn_xmrig(b, &tgt.pool, &tgt.user, &token) {
+                        Ok(child) => {
+                            println!(
+                                "miner started ({} → {}…)",
+                                tgt.pool,
+                                tgt.user.chars().take(16).collect::<String>()
+                            );
+                            sched = tgt.scheduler();
+                            stats_misses = 0;
+                            miner = Some(Miner { child, token });
+                        }
+                        Err(e) => {
+                            eprintln!("{e}");
+                            if !b.exists() {
+                                eprintln!("xmrig binary is missing — it will be re-fetched");
+                                bin = None;
+                            }
+                        }
+                    }
                 }
             }
             (Some(m), false) => {
@@ -546,6 +911,7 @@ async fn cmd_run() -> Result<(), String> {
                 // Crashed? respawn next tick.
                 if let Ok(Some(_)) = m.child.try_wait() {
                     miner = None;
+                    last_hashrate = 0.0;
                     continue;
                 }
             }
@@ -554,15 +920,28 @@ async fn cmd_run() -> Result<(), String> {
 
         // Stats + fee slice while mining.
         if let Some(m) = &mut miner {
-            if let Some(s) = xmrig_summary(&client, &m.token).await {
-                last_hashrate = s["hashrate"]["total"][0].as_f64().unwrap_or(0.0);
-                accepted = s["results"]["shares_good"].as_u64().unwrap_or(accepted);
-                let total = s["results"]["shares_total"].as_u64().unwrap_or(0);
-                rejected = total.saturating_sub(accepted);
+            match xmrig_summary(&client, &m.token).await {
+                Some(s) => {
+                    stats_misses = 0;
+                    last_hashrate = s["hashrate"]["total"][0].as_f64().unwrap_or(0.0);
+                    accepted = s["results"]["shares_good"].as_u64().unwrap_or(accepted);
+                    let total = s["results"]["shares_total"].as_u64().unwrap_or(0);
+                    rejected = total.saturating_sub(accepted);
+                }
+                None => {
+                    stats_misses += 1;
+                    if stats_misses == STATS_MISSES_UNKNOWN {
+                        eprintln!("xmrig stats unavailable — reporting hashrate as unknown");
+                    }
+                    if stats_misses >= STATS_MISSES_UNKNOWN {
+                        last_hashrate = 0.0;
+                    }
+                }
             }
             // Mining time only accrues while actually hashing.
             if last_hashrate > 0.0 {
                 mining_secs += 5;
+                hash_secs += 5;
             }
 
             // LEVEL-TRIGGERED reconcile, deliberately OUTSIDE the hashrate
@@ -579,14 +958,16 @@ async fn cmd_run() -> Result<(), String> {
             //     was the moment we stopped trying. A pool outage right then
             //     pinned the node on the FEE address indefinitely.
             //
-            // Now:every tick, ask xmrig where it is actually mining and correct it.
+            // Now: every tick, ask xmrig where it is actually mining and
+            // correct it. "Where" means EVERY pool entry (all_pools_use), so a
+            // backup pool xmrig failed over to can't hide a wrong login.
             let want = sched.desired(last_hashrate > 0.0, mining_secs);
             let target = side_address(want, &tgt);
-            match xmrig_current_user(&client, &m.token).await {
-                Some(actual) if actual == target => {
+            match xmrig_pools_on(&client, &m.token, target).await {
+                Some(true) => {
                     confirm_side(&mut sched, want, last_hashrate);
                 }
-                Some(_) | None => {
+                Some(false) | None => {
                     if xmrig_set_user(&client, &m.token, target).await {
                         confirm_side(&mut sched, want, last_hashrate);
                     } else if let SwapFailure::StopMining { attempts } = sched.swap_failed(want) {
@@ -606,100 +987,221 @@ async fn cmd_run() -> Result<(), String> {
             }
         }
 
-        // Push every 30 s (or immediately after a command changed state).
-        if !tick.is_multiple_of(6) {
-            continue;
+        // Rollback health: this build has done real work, keep choosing it.
+        if !checked_in
+            && build_checked_in(
+                hash_secs,
+                accepted,
+                want_mining,
+                started.elapsed().as_secs(),
+            )
+        {
+            update::mark_healthy();
+            checked_in = true;
         }
+
+        // "idle" only when the owner has it stopped; a node that wants to mine
+        // and can't yet (no binary, a spawn that failed) is still "starting".
         let state = if miner.is_some() {
             if last_hashrate > 0.0 {
                 "mining"
             } else {
                 "starting"
             }
+        } else if want_mining {
+            "starting"
         } else {
             "idle"
         };
-        let snapshot = build_snapshot(state, last_hashrate, rate_per_kh);
-        let push = api(
-            &client,
-            serde_json::json!({
-                "action": "push",
-                "device_id": cfg.device_id,
-                "secret": cfg.secret,
-                "name": hostname(),
-                "platform": "linux",
-                "app_version": VERSION,
-                "hardware": hardware,
-                "active_coin": "XMR",
-                // No "payouts" — see remote/api.rs. It was never read, and
-                // sending it contradicted the privacy policy. The edge
-                // function and the rigs trigger both drop it now anyway.
-                "snapshot": snapshot,
-                "stats": {"xmrig": {"hashrate_avg": last_hashrate, "accepted": accepted, "rejected": rejected}},
-                "session_mining_ms": mining_secs * 1000,
-            }),
-        )
-        .await;
-        let Ok(v) = push else {
-            eprintln!("push failed: {}", push.unwrap_err());
-            continue;
-        };
-        for cmd in v["commands"].as_array().cloned().unwrap_or_default() {
-            let id = cmd["id"].as_str().unwrap_or("").to_string();
-            let action = cmd["action"].as_str().unwrap_or("");
-            println!("remote command: {action}");
-            let mut restart_into: Option<String> = None;
-            let (ok, result) = match action {
-                "start" => {
-                    want_mining = true;
-                    let _ = std::fs::remove_file(&stopped_flag);
-                    (true, "start ok".to_string())
-                }
-                "stop" => {
-                    want_mining = false;
-                    let _ = std::fs::write(&stopped_flag, b"");
-                    (true, "stop ok".to_string())
-                }
-                "update" => match update::fetch_and_stage(&client).await {
-                    Ok(Some(v)) => {
-                        restart_into = Some(v.clone());
-                        (true, format!("updating to {v}"))
+        let _ = report_tx.send(MinerReport {
+            state,
+            hashrate: last_hashrate,
+            accepted,
+            rejected,
+            mining_secs,
+        });
+    }
+}
+
+/// Everything the cloud link owns. It never touches the miner.
+struct CloudLink {
+    client: reqwest::Client,
+    cfg: DeviceConfig,
+    host: String,
+    hardware: serde_json::Value,
+    /// The USDT address to keep unMineable auto pay on for, on that route.
+    unmineable_usdt: Option<String>,
+    first_poll_in: Duration,
+    report_rx: tokio::sync::watch::Receiver<MinerReport>,
+    events_tx: tokio::sync::mpsc::UnboundedSender<CloudEvent>,
+    done_rx: tokio::sync::mpsc::UnboundedReceiver<Completion>,
+}
+
+/// Push cadence, in seconds.
+const PUSH_SECS: u64 = 30;
+/// Pushes per day, for the daily chores.
+const PUSHES_PER_DAY: u64 = 86_400 / PUSH_SECS;
+
+async fn cloud_link(link: CloudLink) {
+    let CloudLink {
+        client,
+        cfg,
+        host,
+        hardware,
+        unmineable_usdt,
+        first_poll_in,
+        report_rx,
+        events_tx,
+        mut done_rx,
+    } = link;
+
+    // Earnings estimate: a separate client because CoinGecko 403s reqwest's
+    // default agent, and a cached rate refreshed ~every 10 min (the desktop
+    // re-ranks on a similar cadence) — the per-tick hashrate is what varies,
+    // not the network rate.
+    let rate_client = reqwest::Client::builder()
+        .user_agent(concat!("pasivd/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| http_client());
+    let mut rate_per_kh: Option<f64> = None;
+
+    let mut push = tokio::time::interval(Duration::from_secs(PUSH_SECS));
+    push.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    push.tick().await; // the first tick fires immediately; push 30 s in
+    let mut next_poll = tokio::time::Instant::now() + first_poll_in;
+    let mut tick: u64 = 0;
+    let mut push_failures: u64 = 0;
+
+    loop {
+        tokio::select! {
+            Some(c) = done_rx.recv() => {
+                let _ = api(
+                    &client,
+                    serde_json::json!({
+                        "action":"complete","device_id":cfg.device_id,"secret":cfg.secret,
+                        "command_id": c.id, "ok": c.ok, "result": c.result,
+                    }),
+                )
+                .await;
+            }
+            _ = tokio::time::sleep_until(next_poll) => {
+                let wait = match poll_payout(&client, &cfg).await {
+                    Ok(Poll::Claimed(fresh)) => {
+                        let _ = events_tx.send(CloudEvent::Payout(fresh));
+                        POLL_OK
                     }
-                    Ok(None) => (true, "already up to date".to_string()),
-                    Err(e) => (false, format!("update failed: {e}")),
-                },
-                other => (false, format!("unsupported command: {other}")),
-            };
-            let _ = api(
-                &client,
-                serde_json::json!({
-                    "action":"complete","device_id":cfg.device_id,"secret":cfg.secret,
-                    "command_id": id, "ok": ok, "result": result,
-                }),
-            )
-            .await;
-            if let Some(v) = restart_into {
-                restart_for_update(&mut miner, &v).await;
+                    Ok(Poll::NotClaimed(status)) => {
+                        eprintln!(
+                            "warning: the cloud reports this device as {status} — still mining \
+                             on the cached payout; re-claim it from the companion to restore \
+                             remote control"
+                        );
+                        POLL_OK
+                    }
+                    Err(e) => {
+                        eprintln!("cloud poll failed: {e} — retrying in {}s", POLL_RETRY.as_secs());
+                        POLL_RETRY
+                    }
+                };
+                next_poll = tokio::time::Instant::now() + wait;
             }
-        }
-        // Checked in: whichever build this is, it works.
-        update::mark_healthy();
+            _ = push.tick() => {
+                tick += 1;
+                // Refresh the earnings rate on the first push and ~every 10 min.
+                // A failure keeps the last known rate (or none) and retries.
+                if tick == 1 || tick.is_multiple_of(20) {
+                    if let Some(r) = fetch_xmr_rate_per_kh(&rate_client).await {
+                        rate_per_kh = Some(r);
+                    }
+                }
+                let r = report_rx.borrow().clone();
+                let snapshot = build_snapshot(r.state, r.hashrate, rate_per_kh);
+                let pushed = api(
+                    &client,
+                    serde_json::json!({
+                        "action": "push",
+                        "device_id": cfg.device_id,
+                        "secret": cfg.secret,
+                        "name": host,
+                        "platform": "linux",
+                        "app_version": VERSION,
+                        "hardware": hardware,
+                        "active_coin": "XMR",
+                        // No "payouts" — see remote/api.rs. It was never read, and
+                        // sending it contradicted the privacy policy. The edge
+                        // function and the rigs trigger both drop it now anyway.
+                        "snapshot": snapshot,
+                        "stats": {"xmrig": {"hashrate_avg": r.hashrate, "accepted": r.accepted, "rejected": r.rejected}},
+                        "session_mining_ms": r.mining_secs * 1000,
+                    }),
+                )
+                .await;
+                match pushed {
+                    Err(e) => {
+                        push_failures += 1;
+                        // The first failure, then one line every ~10 min: a
+                        // revoked device or a long outage fails every push,
+                        // and 2 880 identical lines a day help nobody.
+                        if push_failures == 1 || push_failures.is_multiple_of(20) {
+                            eprintln!("push failed ({push_failures} in a row): {e} — mining continues");
+                        }
+                    }
+                    Ok(v) => {
+                        if push_failures > 0 {
+                            println!("cloud reachable again after {push_failures} failed pushes");
+                            push_failures = 0;
+                        }
+                        for cmd in v["commands"].as_array().cloned().unwrap_or_default() {
+                            let id = cmd["id"].as_str().unwrap_or("").to_string();
+                            let action = cmd["action"].as_str().unwrap_or("").to_string();
+                            if action == "update" {
+                                // Network work stays here; the miner loop only
+                                // gets told to stop and exit once it is staged.
+                                println!("remote command: update");
+                                let (ok, result, staged) = match update::fetch_and_stage(&client).await {
+                                    Ok(Some(v)) => (true, format!("updating to {v}"), Some(v)),
+                                    Ok(None) => (true, "already up to date".to_string(), None),
+                                    Err(e) => (false, format!("update failed: {e}"), None),
+                                };
+                                let _ = api(
+                                    &client,
+                                    serde_json::json!({
+                                        "action":"complete","device_id":cfg.device_id,"secret":cfg.secret,
+                                        "command_id": id, "ok": ok, "result": result,
+                                    }),
+                                )
+                                .await;
+                                if let Some(v) = staged {
+                                    let _ = events_tx.send(CloudEvent::RestartInto(v));
+                                }
+                            } else {
+                                let _ = events_tx.send(CloudEvent::Command { id, action });
+                            }
+                        }
+                    }
+                }
 
-        // unMineable only pays an address automatically once its "auto pay"
-        // is on, and it starts off. Check ~5 min after start, then daily.
-        if tgt.unmineable && tick % 17_280 == 60 {
-            if let Some(addr) = cfg.payout_usdt.as_deref() {
-                ensure_auto_pay(&client, addr).await;
-            }
-        }
+                // unMineable only pays an address automatically once its "auto pay"
+                // is on, and it starts off. Check ~5 min after start, then daily.
+                if tick % PUSHES_PER_DAY == 10 {
+                    if let Some(addr) = unmineable_usdt.as_deref() {
+                        ensure_auto_pay(&client, addr).await;
+                    }
+                }
 
-        // Daily update check (17 280 ticks of 5 s), first one ~10 min after
-        // start so a crash-looping node never hammers the release host.
-        if tick % 17_280 == 120 {
-            match update::fetch_and_stage(&client).await {
-                Ok(Some(v)) => restart_for_update(&mut miner, &v).await,
-                Ok(None) => {}
-                Err(e) => eprintln!("update check failed: {e}"),
+                // Daily update check, first one ~10 min after start so a
+                // crash-looping node never hammers the release host.
+                if tick % PUSHES_PER_DAY == 20 {
+                    match update::fetch_and_stage(&client).await {
+                        Ok(Some(v)) => {
+                            let _ = events_tx.send(CloudEvent::RestartInto(v));
+                        }
+                        Ok(None) => {}
+                        Err(e) => eprintln!("update check failed: {e}"),
+                    }
+                }
             }
         }
     }
@@ -1000,6 +1502,108 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&tmp).unwrap()).unwrap();
         assert_eq!(again.device_id, "dev-1");
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// The write is atomic: the bytes land in a temp file beside the target
+    /// and are renamed over it, so the old file is intact until the new one
+    /// is complete; a rewrite of identical contents touches nothing (the
+    /// service does this every poll); and no temp file is left behind.
+    #[test]
+    fn config_writes_are_atomic_and_skipped_when_unchanged() {
+        let dir = std::env::temp_dir().join(format!("pasivd-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("nested").join("config.json");
+        assert!(write_private_atomic(&path, b"one").unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"one");
+        // Unchanged contents: no write (the return value says so).
+        assert!(!write_private_atomic(&path, b"one").unwrap());
+        assert!(write_private_atomic(&path, b"two").unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        // Nothing but the target remains in the directory.
+        let names: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["config.json"], "temp file left behind");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The unit must run as the SAME static user the claim hands the config
+    /// to. DynamicUser mints a new uid per start that can never own the 0600
+    /// secret — the 0.1.8 stock install that could not read its own config.
+    #[test]
+    fn the_installer_runs_the_unit_as_the_static_service_user() {
+        let sh = include_str!("../install.sh");
+        assert!(sh.contains(&format!("\nUser={SERVICE_USER}\n")));
+        assert!(sh.contains(&format!("\nGroup={SERVICE_USER}\n")));
+        assert!(!sh.contains("DynamicUser=yes"), "DynamicUser is back");
+        assert!(
+            sh.contains("useradd --system"),
+            "the installer must create the user"
+        );
+        assert!(sh.contains("ProtectSystem=strict"), "the sandbox must stay");
+    }
+
+    /// The uid/gid the claim-time config is handed to, out of /etc/passwd.
+    #[test]
+    fn passwd_lookup_finds_the_service_user_exactly() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash\n\
+                      pasivd-old:x:990:990::/nonexistent:/usr/sbin/nologin\n\
+                      pasivd:x:991:992::/nonexistent:/usr/sbin/nologin\n";
+        assert_eq!(passwd_ids(passwd, "pasivd"), Some((991, 992)));
+        assert_eq!(passwd_ids(passwd, "root"), Some((0, 0)));
+        assert_eq!(passwd_ids(passwd, "nobody"), None);
+        assert_eq!(passwd_ids("", "pasivd"), None);
+        assert_eq!(passwd_ids("pasivd:x:notanumber:1::\n", "pasivd"), None);
+    }
+
+    /// Rollback health is judged by work, never by the cloud: a build that
+    /// hashes is kept; one whose uplink works but whose miner never hashes
+    /// is not; a node the owner has stopped is kept once it has stayed up.
+    #[test]
+    fn a_build_checks_in_by_hashing_not_by_pushing() {
+        assert!(!build_checked_in(0, 0, true, 0));
+        assert!(!build_checked_in(295, 0, true, 3600), "under five minutes");
+        assert!(
+            build_checked_in(300, 0, true, 300),
+            "five minutes of hashing"
+        );
+        assert!(build_checked_in(5, 1, true, 5), "one accepted share");
+        // Owner-stopped: nothing can hash, so staying up is the proof.
+        assert!(!build_checked_in(0, 0, false, 599));
+        assert!(build_checked_in(0, 0, false, 600));
+        // But a node that WANTS to mine and hasn't is never healthy by uptime.
+        assert!(!build_checked_in(0, 0, true, 86_400));
+    }
+
+    /// The payout the node starts on with the cloud down: the state-dir
+    /// cache when present (it is what the service last heard), else the
+    /// claim-time config.
+    #[test]
+    fn cached_payout_prefers_the_state_dir_cache_over_the_claim_time_config() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let cfg = DeviceConfig {
+            device_id: "d".into(),
+            secret: "s".into(),
+            payout_xmr: Some("4claim".into()),
+            payout_usdt: None,
+        };
+        // No cache on disk in this test's data dir → the config's payout.
+        // (data_dir() is the real one; only assert the fallback shape when
+        // no cache file exists there, and never write one.)
+        if !payout_cache_path().exists() {
+            assert_eq!(cached_payout(&cfg).payout_xmr.as_deref(), Some("4claim"));
+        }
+        // The cache document itself round-trips with absent keys as None.
+        let c: PayoutCache = serde_json::from_str(r#"{"payout_usdt":"0xabc"}"#).unwrap();
+        assert_eq!(c.payout_usdt.as_deref(), Some("0xabc"));
+        assert!(c.payout_xmr.is_none());
     }
 
     /// A config written before payouts existed has no `payout_xmr` key at all;

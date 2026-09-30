@@ -179,21 +179,30 @@ pub fn transition(state: &MinerState, input: &Input) -> Option<MinerState> {
         (S::Paused { .. }, I::GovernorRelaunch) => Some(S::Starting {
             phase: WarmPhase::Spawning,
         }),
-        (S::Starting { .. } | S::Mining, I::MinerExitedRetrying) => Some(S::Starting {
-            phase: WarmPhase::Spawning,
-        }),
+        // A Paused lane is a live process the governor holds in place. If that
+        // process dies (or its respawn fails) the lane must move, or it is
+        // stuck on "paused" forever with nothing to resume: the supervisor's
+        // respawn is under way → Starting; a spawn that failed or a backoff
+        // that gave up → Error, exactly as from Mining.
+        (S::Starting { .. } | S::Mining | S::Paused { .. }, I::MinerExitedRetrying) => {
+            Some(S::Starting {
+                phase: WarmPhase::Spawning,
+            })
+        }
         (S::Mining, I::WatchdogRestart) => Some(S::Starting {
             phase: WarmPhase::Spawning,
         }),
-        (S::Starting { .. } | S::Mining, I::BackoffExhausted(kind)) => {
+        (S::Starting { .. } | S::Mining | S::Paused { .. }, I::BackoffExhausted(kind)) => {
             Some(S::Error { kind: *kind })
         }
         (S::Starting { .. } | S::Mining, I::PoolUnreachable) => Some(S::Error {
             kind: ErrorKind::PoolUnreachable,
         }),
-        (S::Idle { .. } | S::Starting { .. }, I::SpawnFailed) => Some(S::Error {
-            kind: ErrorKind::SpawnFailed,
-        }),
+        (S::Idle { .. } | S::Starting { .. } | S::Paused { .. }, I::SpawnFailed) => {
+            Some(S::Error {
+                kind: ErrorKind::SpawnFailed,
+            })
+        }
         // The app stopped itself (fee swap-back failsafe) — an Idle that says so.
         (S::Starting { .. } | S::Mining, I::FeeFailsafe) => Some(S::Idle {
             reason: IdleReason::Failsafe,
@@ -446,6 +455,61 @@ mod tests {
         assert_eq!(transition(&s, &I::GovernorResume), Some(S::Mining));
     }
 
+    /// A Paused lane whose process dies must not stay Paused: there would be
+    /// nothing to resume, and the governor's Resume would "return" to a
+    /// Mining that no longer exists. The supervisor's retry is a warm-up; a
+    /// failed spawn or an exhausted backoff is an Error the user can retry.
+    #[test]
+    fn a_paused_lane_whose_process_dies_is_not_stuck() {
+        for reason in [
+            PauseReason::Battery,
+            PauseReason::Thermal,
+            PauseReason::Fullscreen,
+        ] {
+            let paused = S::Paused { reason };
+            assert_eq!(
+                transition(&paused, &I::MinerExitedRetrying),
+                Some(starting(WarmPhase::Spawning)),
+                "{reason:?}: a respawn under way is a warm-up"
+            );
+            assert_eq!(
+                transition(&paused, &I::SpawnFailed),
+                Some(S::Error {
+                    kind: ErrorKind::SpawnFailed
+                }),
+                "{reason:?}"
+            );
+            assert_eq!(
+                transition(&paused, &I::BackoffExhausted(ErrorKind::MinerCrashed)),
+                Some(S::Error {
+                    kind: ErrorKind::MinerCrashed
+                }),
+                "{reason:?}"
+            );
+        }
+        // The rest of Paused is unchanged: resume, relaunch and stop still
+        // work, and nothing else moves it.
+        let paused = S::Paused {
+            reason: PauseReason::Battery,
+        };
+        assert_eq!(transition(&paused, &I::GovernorResume), Some(S::Mining));
+        assert_eq!(transition(&paused, &I::StopRequested), Some(S::Stopping));
+        for i in [
+            I::UserStart,
+            I::Hashing,
+            I::FirstShare,
+            I::Warm(WarmPhase::Connecting),
+            I::Exited,
+            I::PoolUnreachable,
+            I::FeeFailsafe,
+            I::Dismiss,
+            I::WatchdogRestart,
+            I::GovernorPause(PauseReason::Thermal),
+        ] {
+            assert_eq!(transition(&paused, &i), None, "Paused --{i:?}-->");
+        }
+    }
+
     #[test]
     fn a_parked_lane_relaunches_through_warm_up_only_from_paused() {
         let paused = S::Paused {
@@ -525,7 +589,11 @@ mod tests {
         ] {
             v.push(S::Starting { phase });
         }
-        for reason in [PauseReason::Battery, PauseReason::Thermal] {
+        for reason in [
+            PauseReason::Battery,
+            PauseReason::Thermal,
+            PauseReason::Fullscreen,
+        ] {
             v.push(S::Paused { reason });
         }
         for kind in [
@@ -552,6 +620,7 @@ mod tests {
             I::Exited,
             I::MinerExitedRetrying,
             I::BackoffExhausted(ErrorKind::MinerCrashed),
+            I::BackoffExhausted(ErrorKind::SpawnFailed),
             I::BackoffExhausted(ErrorKind::StopFailed),
             I::SpawnFailed,
             I::PoolUnreachable,
@@ -636,6 +705,30 @@ mod tests {
                 if let (S::Starting { phase }, I::Warm(q)) = (&s, &i) {
                     assert!(q > phase, "Warm emitted without moving forward");
                     assert!(matches!(next, S::Starting { .. }));
+                }
+                // 8. Paused is left only by the governor (resume / relaunch),
+                //    a stop press, or the process itself dying: a retry is a
+                //    warm-up, a failure is an Error. Never straight to Idle,
+                //    and never to Mining except by the governor's resume.
+                if matches!(s, S::Paused { .. }) {
+                    assert!(
+                        matches!(
+                            i,
+                            I::GovernorResume
+                                | I::GovernorRelaunch
+                                | I::StopRequested
+                                | I::MinerExitedRetrying
+                                | I::SpawnFailed
+                                | I::BackoffExhausted(_)
+                        ),
+                        "Paused --{i:?}--> {next:?} is not a legal exit"
+                    );
+                    if matches!(i, I::MinerExitedRetrying) {
+                        assert_eq!(next, starting(WarmPhase::Spawning));
+                    }
+                    if matches!(i, I::SpawnFailed | I::BackoffExhausted(_)) {
+                        assert!(matches!(next, S::Error { .. }));
+                    }
                 }
             }
         }

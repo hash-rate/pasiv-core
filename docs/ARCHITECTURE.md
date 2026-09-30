@@ -69,6 +69,22 @@ Modules: `main.rs` (config, claim, run loop), `doctor.rs` (the PASS/WARN/FAIL
 diagnostic pass), `xmrig.rs` (fetch/verify/spawn + thin HTTP wrappers over
 `pasiv_core::xmrig`).
 
+Resilience (pasivd 0.1.9): the daemon keeps mining whatever the cloud does. A
+failed or revoked startup poll logs loudly and mining starts on the payout the
+node last heard (cached atomically in its state directory — the owner's own
+address); the cloud is re-polled every 60 s until it answers, then hourly, and
+a revoked node warns hourly and keeps hashing. Only a node with no payout
+anywhere waits. Every cloud call has a 15 s request / 5 s connect timeout and
+runs on its own task, so a hung request can delay a push but never a miner
+respawn or the end of a fee slice; the miner loop's only awaits are loopback
+calls to xmrig with a 3 s timeout. Config and payout-cache writes are
+temp-file + fsync + rename, 0600, and skipped when unchanged; the xmrig
+binary is replaced only after its replacement is downloaded and verified; and
+an update's rollback health is judged by hashing, not by a push succeeding.
+The shared crate's hardware probes are bounded too: any shell-out
+(`nvidia-smi`, `lspci`, `powershell`, `sysctl`, `reg`) is killed after 5 s and
+GPU detection answers with its last good result rather than hanging setup.
+
 ## The boundary
 
 The proprietary apps (desktop GUI, phone companions, the cloud functions,

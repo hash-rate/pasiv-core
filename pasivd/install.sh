@@ -126,13 +126,45 @@ chmod 755 "$TMP"
 $SUDO mv "$TMP" "$BIN_PATH"
 # mv preserves the invoking user's ownership — without this, a system-wide
 # root-run daemon binary stays writable by whoever installed it, and the
-# unit's DynamicUser cannot execute a 0700 file owned by someone else.
+# unit's service user cannot execute a 0700 file owned by someone else.
 $SUDO chown 0:0 "$BIN_PATH"
 $SUDO chmod 755 "$BIN_PATH"
 
 # ---------------------------------------------------------------------------
-# Performance boost. The unit below sandboxes pasivd to a dynamic non-root
-# user (correct for a consumer machine), which also means the miner can never
+# The service user. A STATIC system user, `pasivd`, not DynamicUser: a dynamic
+# uid is minted fresh at every start, so nothing can be chowned to it ahead of
+# time — and `pasivd claim` (run as root) writes /etc/pasivd.json 0600, which
+# the sandboxed service then could not read. A stock install could not load
+# its own device secret; only a hand-written drop-in (User=pasivd) made it
+# work. With a static user the claim hands the file over, the state directory
+# keeps one owner across restarts, and that drop-in — if present — now agrees
+# with the unit instead of overriding it.
+SERVICE_USER="pasivd"
+if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+  echo "→ creating the $SERVICE_USER service user"
+  NOLOGIN="$(command -v nologin 2>/dev/null || echo /bin/false)"
+  if command -v useradd >/dev/null 2>&1; then
+    $SUDO useradd --system --user-group --no-create-home \
+      --home-dir /var/lib/pasivd --shell "$NOLOGIN" "$SERVICE_USER"
+  else
+    # busybox (adduser/addgroup) — no useradd.
+    $SUDO addgroup -S "$SERVICE_USER" 2>/dev/null || true
+    $SUDO adduser -S -D -H -h /var/lib/pasivd -s "$NOLOGIN" -G "$SERVICE_USER" "$SERVICE_USER"
+  fi
+fi
+# An existing node (claimed under the old unit) migrates in place: the same
+# files, handed to the user that will now read them. The secret stays 0600.
+if [ -e /etc/pasivd.json ]; then
+  $SUDO chown "$SERVICE_USER:$SERVICE_USER" /etc/pasivd.json
+  $SUDO chmod 600 /etc/pasivd.json
+fi
+if [ -d /var/lib/pasivd ]; then
+  $SUDO chown -R "$SERVICE_USER:$SERVICE_USER" /var/lib/pasivd
+fi
+
+# ---------------------------------------------------------------------------
+# Performance boost. The unit below sandboxes pasivd to an unprivileged
+# service user (correct for a consumer machine), which also means the miner can never
 # reserve RandomX huge pages or apply the MSR preset — the two levers worth
 # 5–15% hashrate depending on silicon. So the unit runs ONE privileged
 # ExecStartPre script that does both, best-effort, before the sandbox drops.
@@ -264,9 +296,14 @@ RestartSec=10
 Nice=19
 CPUWeight=20
 IOWeight=20
-DynamicUser=yes
+# A static, unprivileged system user (created by the installer) rather than
+# DynamicUser: the config `pasivd claim` writes as root is chowned to it, so
+# the sandboxed service can read its own device secret. /etc stays read-only
+# to the service (ProtectSystem=strict); everything it writes lives in the
+# state directory.
+User=pasivd
+Group=pasivd
 StateDirectory=pasivd
-ConfigurationDirectory=pasivd
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

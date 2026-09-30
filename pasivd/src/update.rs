@@ -1,8 +1,8 @@
 //! Signed self-update for the headless node.
 //!
 //! The installed binary (/usr/local/bin/pasivd) is read-only to the sandboxed
-//! service (ProtectSystem=strict, DynamicUser), so an update never overwrites
-//! it. It is STAGED in the node's own state directory beside its minisign
+//! service (ProtectSystem=strict, an unprivileged service user), so an update
+//! never overwrites it. It is STAGED in the node's own state directory beside its minisign
 //! signature, and the installed binary acts as a launcher: on `pasivd run` it
 //! re-verifies the staged copy and, if it is signed by the pinned key and
 //! newer, execs it. Nothing unsigned is ever executed — not even to read its
@@ -104,8 +104,9 @@ fn write_pending_boots(n: u32) {
     let _ = std::fs::write(pending_boots_path(), n.to_string());
 }
 
-/// Called once the running build has checked in successfully: it works, so
-/// the launcher keeps choosing it.
+/// Called once the running build has proven itself — by hashing (five
+/// minutes, or an accepted share), never by a cloud push succeeding — so the
+/// launcher keeps choosing it. The rule lives in `main::build_checked_in`.
 pub(crate) fn mark_healthy() {
     if read_pending_boots() != 0 {
         write_pending_boots(0);
@@ -203,8 +204,12 @@ pub(crate) fn launch_staged_if_any() {
 /// already up to date.
 pub(crate) async fn fetch_and_stage(client: &reqwest::Client) -> Result<Option<String>, String> {
     let get = |url: String| async move {
+        // The shared client's 15 s total is right for API calls and too
+        // short for a few-MB binary on a slow link; the release download
+        // gets its own ceiling (the connect timeout still applies).
         let r = client
             .get(&url)
+            .timeout(std::time::Duration::from_secs(300))
             .send()
             .await
             .map_err(|e| e.to_string())?
@@ -253,7 +258,7 @@ pub(crate) async fn fetch_and_stage(client: &reqwest::Client) -> Result<Option<S
 /// or the service could not keep its start count and would never abandon a
 /// build that fails to check in.
 pub(crate) async fn cmd_update() -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = crate::http_client();
     let staged = fetch_and_stage(&client).await?;
     if let Ok(meta) = std::fs::metadata(data_dir()) {
         use std::os::unix::fs::MetadataExt;

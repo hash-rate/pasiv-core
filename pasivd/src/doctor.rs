@@ -44,6 +44,37 @@ pub async fn cmd_doctor() -> Result<(), String> {
                         } else {
                             report("PASS", "config.perms", format!("0o{mode:o}"));
                         }
+                        // The service runs as an unprivileged static user; a
+                        // 0600 file it does not own is one it cannot read —
+                        // the node then starts, finds "no config", and exits
+                        // 1 forever. This is exactly what a stock 0.1.8
+                        // install did under DynamicUser.
+                        use std::os::unix::fs::MetadataExt;
+                        if let Some((uid, _)) = std::fs::read_to_string("/etc/passwd")
+                            .ok()
+                            .and_then(|p| crate::passwd_ids(&p, crate::SERVICE_USER))
+                        {
+                            if meta.uid() == uid || mode & 0o004 != 0 {
+                                report(
+                                    "PASS",
+                                    "config.owner",
+                                    format!("readable by the {} service user", crate::SERVICE_USER),
+                                );
+                            } else {
+                                report(
+                                    "FAIL",
+                                    "config.owner",
+                                    format!(
+                                        "owned by uid {} but the service runs as {} (uid {uid}) and cannot read it — fix: chown {}:{} {}",
+                                        meta.uid(),
+                                        crate::SERVICE_USER,
+                                        crate::SERVICE_USER,
+                                        crate::SERVICE_USER,
+                                        path.display()
+                                    ),
+                                );
+                            }
+                        }
                     }
                 }
                 Some(c)
@@ -63,10 +94,12 @@ pub async fn cmd_doctor() -> Result<(), String> {
         }
     };
 
-    // payout: the address every share pays to. USDT (unMineable) wins over
-    // XMR, exactly as `target` chooses — see main.rs.
-    let usdt = cfg.as_ref().and_then(|c| c.payout_usdt.as_deref());
-    let xmr = cfg.as_ref().and_then(|c| c.payout_xmr.as_deref());
+    // payout: the address every share pays to — the one the node would start
+    // on with the cloud down (the state-dir cache, else the claim-time
+    // config). USDT (unMineable) wins over XMR, exactly as `target` chooses.
+    let payout = cfg.as_ref().map(crate::cached_payout);
+    let usdt = payout.as_ref().and_then(|p| p.payout_usdt.as_deref());
+    let xmr = payout.as_ref().and_then(|p| p.payout_xmr.as_deref());
     match (usdt, xmr) {
         (Some(a), _)
             if pasiv_core::address::is_valid_bsc_address(a)
@@ -94,7 +127,7 @@ pub async fn cmd_doctor() -> Result<(), String> {
         (None, None) => report(
             "WARN",
             "payout",
-            "no payout cached locally — normal: the node reads it from your account at each start (if it isn't mining, set one in the desktop app's Wallets tab)".into(),
+            "no payout cached locally — the node reads it from your account at each start and caches it; until then it cannot mine with the cloud down (if it isn't mining, set one in the desktop app's Wallets tab)".into(),
         ),
     }
 
@@ -217,7 +250,7 @@ pub async fn cmd_doctor() -> Result<(), String> {
     // `run` lives on. Offline is a WARN, not a FAIL: mining continues without
     // the uplink; only stale companion data results.
     if let Some(cfg) = &cfg {
-        let client = reqwest::Client::new();
+        let client = crate::http_client();
         match api(
             &client,
             serde_json::json!({"action":"poll","device_id":cfg.device_id,"secret":cfg.secret}),

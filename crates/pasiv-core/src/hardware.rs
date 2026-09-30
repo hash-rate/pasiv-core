@@ -5,6 +5,79 @@
 //! `nvidia-smi` (nvml-wrapper can replace this when M3 lands for real).
 
 use serde::Serialize;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+/// How long any hardware probe that shells out may run before it is killed.
+///
+/// `nvidia-smi` on a wedged driver never returns — and `Command::output()`
+/// would wait for it forever, from inside the app's setup and its recovery
+/// loop. Five seconds is an order of magnitude above a healthy probe (tens
+/// of ms) and short enough that a hung driver costs one missed poll, not a
+/// hung app.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Run `cmd` to completion with a deadline. `None` when it could not be
+/// spawned or did not exit within `timeout` — in which case it is killed and
+/// reaped, so a hung probe never leaks a zombie or a stuck pipe reader.
+/// `Some(output)` carries the exit status and stdout; stderr is discarded
+/// (a probe's stderr is never parsed, and an unread pipe is one more way to
+/// deadlock). A missing binary surfaces as `None` or as a non-success status
+/// depending on how the platform reports exec errors; callers must treat the
+/// two alike (`probe_stdout` does).
+///
+/// std only: a spawn, a reader thread for stdout, and a `try_wait` poll
+/// loop. Public so the desktop's other probes (governor, large pages) can
+/// bound their shell-outs the same way.
+pub fn output_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<Output> {
+    use std::io::Read;
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().ok()?;
+    let mut pipe = child.stdout.take()?;
+    // The reader hands its buffer over a channel rather than being joined:
+    // a grandchild that inherited the pipe could hold it open past the
+    // child's exit, and a join would then hang exactly where `output()` did.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = pipe.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let stdout = rx.recv_timeout(remaining).unwrap_or_default();
+                return Some(Output {
+                    status,
+                    stdout,
+                    stderr: Vec::new(),
+                });
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+/// `output_with_timeout` at [`PROBE_TIMEOUT`], returning stdout only when
+/// the probe exited successfully. `None` = no usable answer (absent tool,
+/// non-zero exit, or a hang that was killed).
+fn probe_stdout(cmd: &mut Command) -> Option<String> {
+    let out = output_with_timeout(cmd, PROBE_TIMEOUT)?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GpuInfo {
@@ -76,12 +149,9 @@ pub fn parse_cpuinfo_model(text: &str) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn read_cpu_model() -> Option<String> {
-    let out = std::process::Command::new("sysctl")
-        .args(["-n", "machdep.cpu.brand_string"])
-        .output()
-        .ok()?;
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && !s.is_empty()).then_some(s)
+    let out = probe_stdout(Command::new("sysctl").args(["-n", "machdep.cpu.brand_string"]))?;
+    let s = out.trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 #[cfg(windows)]
@@ -92,20 +162,15 @@ fn read_cpu_model() -> Option<String> {
     // "AMD64 Family 25 Model 97 …", which is not what anyone reads a fleet by.
     // CREATE_NO_WINDOW for the same reason as the nvidia-smi probe below: a GUI
     // app must not blink a console open.
-    let out = std::process::Command::new("reg")
-        .args([
-            "query",
-            r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
-            "/v",
-            "ProcessorNameString",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| parse_reg_processor_name(&String::from_utf8_lossy(&out.stdout)))
-        .flatten()
+    let mut cmd = Command::new("reg");
+    cmd.args([
+        "query",
+        r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+        "/v",
+        "ProcessorNameString",
+    ])
+    .creation_flags(CREATE_NO_WINDOW);
+    parse_reg_processor_name(&probe_stdout(&mut cmd)?)
 }
 
 /// Pure: the value out of `reg query … /v ProcessorNameString` output, whose
@@ -129,11 +194,27 @@ fn detect_gpus() -> Vec<GpuInfo> {
     Vec::new() // no CUDA on macOS; Pearl mining is Windows/Linux only
 }
 
+/// GPU probes shell out (`nvidia-smi`, `lspci`, `powershell`) and each is
+/// bounded by [`PROBE_TIMEOUT`]. A probe that hangs is killed and reports
+/// `None`; this then answers with the LAST GOOD full result, so one wedged
+/// driver costs a stale-but-true list rather than a hung app or a GPU that
+/// vanishes from the UI mid-session. With no good result yet it answers with
+/// what did work — "no GPU info" for the half that hung.
 #[cfg(not(target_os = "macos"))]
 fn detect_gpus() -> Vec<GpuInfo> {
-    let mut gpus = detect_nvidia();
-    gpus.extend(detect_amd());
-    gpus
+    static LAST_GOOD: std::sync::Mutex<Option<Vec<GpuInfo>>> = std::sync::Mutex::new(None);
+    let nvidia = detect_nvidia();
+    let amd = detect_amd();
+    let complete = nvidia.is_some() && amd.is_some();
+    let mut gpus = nvidia.unwrap_or_default();
+    gpus.extend(amd.unwrap_or_default());
+    let mut cache = LAST_GOOD.lock().unwrap_or_else(|e| e.into_inner());
+    if complete {
+        *cache = Some(gpus.clone());
+        gpus
+    } else {
+        cache.clone().unwrap_or(gpus)
+    }
 }
 
 /// AMD Radeon eligibility for Pearl (pearlhash via SRBMiner-Multi, which runs
@@ -176,28 +257,32 @@ fn parse_amd_registry(out: &str) -> Vec<GpuInfo> {
         .collect()
 }
 
+/// `None` = the probe hung and was killed (see `detect_gpus`); `Some(empty)`
+/// = it ran and found nothing.
 #[cfg(windows)]
-fn detect_amd() -> Vec<GpuInfo> {
+fn detect_amd() -> Option<Vec<GpuInfo>> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let script = "Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0*' -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -match 'Advanced Micro|AMD|ATI' } | ForEach-Object { \"$($_.DriverDesc)|$($_.'HardwareInformation.qwMemorySize')\" }";
-    let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-    match out {
-        Ok(o) if o.status.success() => parse_amd_registry(&String::from_utf8_lossy(&o.stdout)),
-        _ => Vec::new(),
-    }
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .creation_flags(CREATE_NO_WINDOW);
+    let out = output_with_timeout(&mut cmd, PROBE_TIMEOUT)?;
+    Some(if out.status.success() {
+        parse_amd_registry(&String::from_utf8_lossy(&out.stdout))
+    } else {
+        Vec::new()
+    })
 }
 
 /// Linux: amdgpu exposes vendor + VRAM in sysfs; the marketing name comes from
-/// `lspci -mm` for the card's PCI slot (falls back to a generic name).
+/// `lspci -mm` for the card's PCI slot (falls back to a generic name, also
+/// when `lspci` hangs — sysfs is the source of truth, the name is cosmetic).
 #[cfg(target_os = "linux")]
-fn detect_amd() -> Vec<GpuInfo> {
+fn detect_amd() -> Option<Vec<GpuInfo>> {
     let mut gpus = Vec::new();
     let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
-        return gpus;
+        return Some(gpus);
     };
     for e in entries.flatten() {
         let fname = e.file_name().to_string_lossy().to_string();
@@ -218,11 +303,8 @@ fn detect_amd() -> Vec<GpuInfo> {
             .ok()
             .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
             .unwrap_or_default();
-        let name = std::process::Command::new("lspci")
-            .args(["-mm", "-s", &slot])
-            .output()
-            .ok()
-            .and_then(|o| parse_lspci_mm_name(&String::from_utf8_lossy(&o.stdout)))
+        let name = probe_stdout(Command::new("lspci").args(["-mm", "-s", &slot]))
+            .and_then(|o| parse_lspci_mm_name(&o))
             .unwrap_or_else(|| "AMD Radeon GPU".to_string());
         gpus.push(GpuInfo {
             eligible: amd_eligible(&name, vram_mb),
@@ -230,7 +312,7 @@ fn detect_amd() -> Vec<GpuInfo> {
             vram_mb,
         });
     }
-    gpus
+    Some(gpus)
 }
 
 /// `lspci -mm` quotes its fields: slot "class" "vendor" "device" …; the device
@@ -250,14 +332,17 @@ fn parse_lspci_mm_name(out: &str) -> Option<String> {
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-fn detect_amd() -> Vec<GpuInfo> {
-    Vec::new()
+fn detect_amd() -> Option<Vec<GpuInfo>> {
+    Some(Vec::new())
 }
 
+/// `None` = `nvidia-smi` hung past [`PROBE_TIMEOUT`] and was killed (a wedged
+/// driver — the case that used to block setup and the recovery loop
+/// forever); `Some(empty)` = no tool, no GPU, or a non-zero exit.
 #[cfg(not(target_os = "macos"))]
-fn detect_nvidia() -> Vec<GpuInfo> {
+fn detect_nvidia() -> Option<Vec<GpuInfo>> {
     // Minimal probe until nvml-wrapper lands with real M3: name + VRAM.
-    let mut cmd = std::process::Command::new("nvidia-smi");
+    let mut cmd = Command::new("nvidia-smi");
     cmd.args([
         "--query-gpu=name,memory.total",
         "--format=csv,noheader,nounits",
@@ -271,11 +356,16 @@ fn detect_nvidia() -> Vec<GpuInfo> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let out = match cmd.output() {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        _ => return Vec::new(),
-    };
-    parse_nvidia_smi(&out)
+    match output_with_timeout(&mut cmd, PROBE_TIMEOUT) {
+        Some(o) if o.status.success() => {
+            Some(parse_nvidia_smi(&String::from_utf8_lossy(&o.stdout)))
+        }
+        // Spawn failed (no nvidia-smi on PATH) is indistinguishable from a
+        // kill-on-timeout here; both are "no answer this time", and the
+        // cache in `detect_gpus` makes either harmless.
+        Some(_) => Some(Vec::new()),
+        None => None,
+    }
 }
 
 /// Parse `nvidia-smi --query-gpu=name,memory.total` output. Pearl gating:
@@ -572,6 +662,52 @@ mod tests {
         assert!(!by("GTX 1060").eligible); // Pascal, too old
         assert!(by("Tesla T").eligible);
         assert!(!by("RTX 3050").eligible); // eligible arch but < 3 GB
+    }
+
+    /// The wedged-driver case: a probe that never returns is killed at the
+    /// deadline and reports `None`, instead of holding the caller forever
+    /// the way `Command::output()` did. `sleep 30` stands in for the hung
+    /// `nvidia-smi`; a 2 s deadline proves the mechanism without slowing the
+    /// suite (production uses `PROBE_TIMEOUT`).
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_probe_is_killed_at_the_deadline() {
+        let started = Instant::now();
+        let out = output_with_timeout(Command::new("sleep").arg("30"), Duration::from_secs(2));
+        let took = started.elapsed();
+        assert!(out.is_none(), "a probe past its deadline must report None");
+        assert!(
+            took >= Duration::from_secs(2) && took < Duration::from_secs(10),
+            "returned after {took:?}: neither early nor hung"
+        );
+    }
+
+    /// A probe that answers in time is unchanged: exit status and stdout
+    /// come back exactly as `output()` would have given them.
+    #[cfg(unix)]
+    #[test]
+    fn a_prompt_probe_returns_its_output() {
+        let out = output_with_timeout(Command::new("echo").arg("hi"), PROBE_TIMEOUT).unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
+        // A non-zero exit still returns (the caller reads the status); a hang
+        // is None.
+        let out = output_with_timeout(&mut Command::new("false"), PROBE_TIMEOUT).unwrap();
+        assert!(!out.status.success());
+        // A missing binary is never a usable answer. How it surfaces depends
+        // on how the platform reports exec errors — a spawn error (None) on
+        // macOS and native Linux, a child that exited 127 under some
+        // emulated/containerised runtimes — and both callers normalise the
+        // two, so the contract pinned here is the one they rely on.
+        let missing = output_with_timeout(
+            &mut Command::new("pasiv-no-such-probe-binary"),
+            PROBE_TIMEOUT,
+        );
+        assert!(
+            missing.as_ref().is_none_or(|o| !o.status.success()),
+            "a missing probe binary must never look like a successful probe"
+        );
+        assert!(probe_stdout(&mut Command::new("pasiv-no-such-probe-binary")).is_none());
     }
 
     #[test]

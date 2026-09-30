@@ -5,7 +5,7 @@ and no GUI. `pasivd` mines Monero on the CPU, paid to your own address — in
 USDT via unMineable when your account has a USDT payout (the default for new
 Pasiv installs), otherwise in XMR direct — and reports state to the fleet, so a
 screenless machine shows up in the phone companion alongside your desktops. It
-versions **independently** of the desktop app (currently `0.1.5`).
+versions **independently** of the desktop app (currently `0.1.9`).
 
 A daemon can't do a wallet signature (no browser), so it pairs like a TV app.
 
@@ -77,10 +77,39 @@ exits `2` (usage) and a failure exits `1`, so a wrapper can tell them apart.
   raised thermal/power limits, ever (never-list item 9). The node mines with
   what is already spare: `Nice=19`, `CPUWeight=20`, and it yields to real work.
 
+## Resilience
+
+**It keeps mining whatever the cloud does.** The cloud is consulted, never
+obeyed into silence. At start the node polls your account once for the payout;
+if the edge function, the network, or TLS is down — or the device has been
+revoked or un-claimed — it logs that loudly and starts mining anyway on the
+payout it last heard (cached in `/var/lib/pasivd/payout.json`, your own
+address), then re-polls every 60 s until the cloud answers and hourly after
+that. A revoked node warns once an hour and keeps hashing; only a node with no
+payout anywhere waits, because there is nothing to mine to. Before 0.1.9 a
+failed startup poll made `pasivd run` exit 1 and systemd restart it forever
+without a hash.
+
+**The miner loop never waits on the network.** Cloud pushes, polls, update
+checks and the unMineable auto-pay check run on their own task with a 15 s
+request / 5 s connect timeout (downloads get a longer ceiling); a hung request
+delays the next push, never a respawn or the end of a fee slice. Local xmrig
+stats that fail twice in a row are reported as unknown (hashrate 0) rather than
+repeating the last good number, and the xmrig binary is replaced only after the
+new one is downloaded and sha256-verified, so an unreachable release host never
+leaves a node with no miner; a missing binary is re-fetched every 10 minutes.
+
+**Config writes are atomic.** The device config and the payout cache are
+written to a temp file in the same directory (0600 from creation), fsync'd, and
+renamed over the old file, and only when the contents changed — a power cut
+mid-write can never leave an empty identity file. An update's rollback health
+is judged by work (five minutes of hashing or an accepted share), not by a
+cloud push succeeding.
+
 ## Performance
 
-The unit sandboxes pasivd to a dynamic non-root user, which is right for a
-machine you also use — and it means the miner cannot reserve RandomX huge pages
+The unit sandboxes pasivd to an unprivileged `pasivd` system user, which is
+right for a machine you also use — and it means the miner cannot reserve RandomX huge pages
 or apply the CPU MSR preset itself. Those are worth roughly **5-15%** together,
 so the installer applies them for you: `/usr/local/libexec/pasivd-boost.sh` runs
 privileged (`ExecStartPre=-+`) just before the sandbox drops, and is best-effort
@@ -98,11 +127,14 @@ says so explicitly rather than implying a fix exists.
 
 ## Config & data
 
-- `/etc/pasivd.json` — device id + secret (a bearer credential; kept `0600`).
-  Override the path with `PASIVD_CONFIG`.
-- `/var/lib/pasivd/` — the fetched XMRig, `fee-ledger.jsonl` (one JSON line
-  per fee slice, the same format the desktop writes), `stopped` (present while
-  the owner has the node stopped), and `update/` (a staged signed release).
+- `/etc/pasivd.json` — device id + secret (a bearer credential; kept `0600`,
+  written by `pasivd claim` as root and handed to the `pasivd` service user so
+  the sandboxed unit can read it). Override the path with `PASIVD_CONFIG`.
+- `/var/lib/pasivd/` — the fetched XMRig, `payout.json` (the payout last heard
+  from your account — what the node mines to when the cloud is unreachable),
+  `fee-ledger.jsonl` (one JSON line per fee slice, the same format the desktop
+  writes), `stopped` (present while the owner has the node stopped), and
+  `update/` (a staged signed release).
 
 ## Build & test
 
