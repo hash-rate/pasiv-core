@@ -28,6 +28,8 @@ use pasiv_core::address::is_valid_xmr_address;
 use pasiv_core::fee::{self, PayoutSide, SliceScheduler, SwapFailure, FEE_ADDRESS_XMR};
 use serde::{Deserialize, Serialize};
 mod doctor;
+mod scrub;
+mod sentry;
 mod ui;
 mod update;
 mod xmrig;
@@ -247,6 +249,14 @@ pub(crate) struct DeviceConfig {
     /// chose it in the desktop app. Preferred over payout_xmr — see `target`.
     #[serde(default)]
     payout_usdt: Option<String>,
+    /// Crash reports (`crate::sentry`): `false` turns them off. On by
+    /// default, disclosed in the README, and `PASIVD_TELEMETRY=0` overrides.
+    #[serde(default = "default_true")]
+    telemetry: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Where this node mines and who each fee side pays.
@@ -392,13 +402,15 @@ async fn cmd_claim() -> Result<(), String> {
         if v["status"] == "claimed" {
             let payout = v["payout_xmr"].as_str().map(|s| s.to_string());
             let payout_usdt = v["payout_usdt"].as_str().map(|s| s.to_string());
+            let path = config_path();
             let cfg = DeviceConfig {
                 device_id,
                 secret,
                 payout_xmr: payout.clone(),
                 payout_usdt: payout_usdt.clone(),
+                // A re-claim keeps the owner's crash-report choice.
+                telemetry: sentry::config_file_allows(&path),
             };
-            let path = config_path();
             write_config(&path, &cfg)?;
             // A re-claim binds the node to whoever approved THIS code; a
             // payout cached from the previous owner must not outlive that.
@@ -735,6 +747,7 @@ async fn cmd_run() -> Result<(), String> {
     let client = http_client();
 
     let (mut tgt, mut payout, first_poll_in) = startup_target(&client, &cfg, &host).await;
+    sentry::set_route(tgt.unmineable);
 
     // The miner binary, fetched and pinned. A failure here is no longer
     // fatal: the loop below retries every ENSURE_RETRY, so a node installed
@@ -1266,6 +1279,12 @@ async fn main() {
     // `-h`/`--help` anywhere turns a command into its own help page.
     let wants_help = args.iter().any(|a| a == "-h" || a == "--help");
 
+    // Crash reporting for the commands that do work (never for help/version):
+    // off with `"telemetry": false` in the config or PASIVD_TELEMETRY=0.
+    if !wants_help && matches!(cmd, "claim" | "run" | "doctor" | "update") {
+        sentry::init();
+    }
+
     let result = match cmd {
         "help" | "-h" | "--help" => {
             ui::print_help(VERSION);
@@ -1479,6 +1498,7 @@ mod tests {
             secret: "s3cret".into(),
             payout_xmr: Some("4addr".into()),
             payout_usdt: None,
+            telemetry: false,
         };
         write_config(&tmp, &cfg).unwrap();
         #[cfg(unix)]
@@ -1593,6 +1613,7 @@ mod tests {
             secret: "s".into(),
             payout_xmr: Some("4claim".into()),
             payout_usdt: None,
+            telemetry: true,
         };
         // No cache on disk in this test's data dir → the config's payout.
         // (data_dir() is the real one; only assert the fallback shape when

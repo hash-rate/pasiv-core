@@ -16,6 +16,13 @@ rand = "0.8"
 flate2 = "1"
 tar = "0.4"
 minisign-verify = "0.2"
+# Crash reporting (src/sentry.rs): panics only, scrubbed (src/scrub.rs), off
+# with `"telemetry": false` or PASIVD_TELEMETRY=0. Pinned to 0.46 — the last
+# sentry on reqwest 0.12, so the static musl binary carries ONE reqwest/hyper/
+# rustls stack (0.47+ moved to reqwest 0.13, a second copy of all three).
+sentry = { version = "0.46", default-features = false, features = ["backtrace", "contexts", "panic", "debug-images", "reqwest", "rustls"] }
+# The scrubber's patterns (pure Rust; no new native code in the static build).
+regex = "1"
 
 
 [dependencies.pasiv-core]

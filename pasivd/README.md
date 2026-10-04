@@ -136,6 +136,27 @@ says so explicitly rather than implying a fix exists.
   writes), `stopped` (present while the owner has the node stopped), and
   `update/` (a staged signed release).
 
+## Crash reports
+
+If pasivd **panics**, it sends one crash report to Sentry (`src/sentry.rs`)
+before it exits: the panic message and `file:line`, a backtrace, the daemon
+version, and two tags — `os` and `payout_route` (`usdt`/`direct`). Nothing
+else leaves: no payout address, no hostname, no account name, no IP, no
+session, no breadcrumbs. Every text field is scrubbed first (`src/scrub.rs`:
+coin addresses of every shape, home paths, e-mails, IPs, MACs, hostnames, and
+this machine's own host and user names → `<address>`, `<user>`, `<host>`, …), and
+the cases are the public table `tests/contracts/scrub.json`.
+
+Turn it off either way — the never-list in [`docs/FEES.md`](../docs/FEES.md)
+promises telemetry you can switch off:
+
+- `"telemetry": false` in `/etc/pasivd.json` (the key `pasivd claim` writes;
+  a re-claim keeps your choice), or
+- `PASIVD_TELEMETRY=0` in the unit's environment (`systemctl edit pasivd` →
+  `[Service]` `Environment=PASIVD_TELEMETRY=0`).
+
+Normal operation sends nothing to Sentry; `help` and `version` never start it.
+
 ## Build & test
 
 ```bash

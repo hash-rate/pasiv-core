@@ -1,0 +1,212 @@
+[
+  {
+    "name": "mac_user_path",
+    "input": "read /Users/jane/Library/Application Support/app.pasiv.desktop/pasiv.json",
+    "expected": "read /Users/<user>/Library/Application Support/app.pasiv.desktop/pasiv.json"
+  },
+  {
+    "name": "linux_home_path",
+    "input": "/home/alice/.local/share/pasiv/update.log",
+    "expected": "/home/<user>/.local/share/pasiv/update.log"
+  },
+  {
+    "name": "windows_user_path_with_space",
+    "input": "C:\\Users\\Bob Smith\\AppData\\Local\\Pasiv\\pasiv.exe",
+    "expected": "C:\\Users\\<user>\\AppData\\Local\\Pasiv\\pasiv.exe"
+  },
+  {
+    "name": "windows_forward_slash_path",
+    "input": "c:/Users/bob/AppData/Local/Pasiv",
+    "expected": "c:/Users/<user>/AppData/Local/Pasiv"
+  },
+  {
+    "name": "windows_path_doubled_backslashes",
+    "input": "C:\\\\Users\\\\carol\\\\AppData",
+    "expected": "C:\\\\Users\\\\<user>\\\\AppData"
+  },
+  {
+    "name": "windows_user_path_colon_suffix",
+    "input": "C:\\Users\\bob: access denied",
+    "expected": "C:\\Users\\<user>: access denied"
+  },
+  {
+    "name": "unix_path_in_quotes",
+    "input": "open \"/home/eve/x.json\": denied",
+    "expected": "open \"/home/<user>/x.json\": denied"
+  },
+  {
+    "name": "two_unix_paths",
+    "input": "/Users/a/x and /Users/b/y",
+    "expected": "/Users/<user>/x and /Users/<user>/y"
+  },
+  {
+    "name": "email",
+    "input": "contact jane.doe+pasiv@example.com now",
+    "expected": "contact <email> now"
+  },
+  {
+    "name": "evm_address",
+    "input": "payout 0x71C7656EC7ab88b098defB751B7401B5f6d8976F saved",
+    "expected": "payout <address> saved"
+  },
+  {
+    "name": "monero_standard",
+    "input": "login 4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA rejected",
+    "expected": "login <address> rejected"
+  },
+  {
+    "name": "monero_integrated",
+    "input": "4BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "expected": "<address>"
+  },
+  {
+    "name": "zephyr",
+    "input": "ZEPHYR33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+    "expected": "<address>"
+  },
+  {
+    "name": "salvium",
+    "input": "SC14444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444",
+    "expected": "<address>"
+  },
+  {
+    "name": "verus",
+    "input": "worker RPPPm6dVbpx3L3yDRK1ktZ1VnDbBTtNMoy",
+    "expected": "worker <address>"
+  },
+  {
+    "name": "btc_legacy",
+    "input": "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
+    "expected": "<address>"
+  },
+  {
+    "name": "btc_bech32",
+    "input": "to bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq ok",
+    "expected": "to <address> ok"
+  },
+  {
+    "name": "tron",
+    "input": "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8",
+    "expected": "<address>"
+  },
+  {
+    "name": "pool_login_keeps_worker",
+    "input": "user 99999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999.rig1",
+    "expected": "user <address>.rig1"
+  },
+  {
+    "name": "sha256_hex",
+    "input": "sha256 abababababababababababababababababababababababababababababababab mismatch",
+    "expected": "sha256 <hex> mismatch"
+  },
+  {
+    "name": "evm_tx_hash",
+    "input": "tx 0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "expected": "tx <hex>"
+  },
+  {
+    "name": "ipv4_private",
+    "input": "connect 192.168.1.42:3333 refused",
+    "expected": "connect <ip>:3333 refused"
+  },
+  {
+    "name": "ipv4_public",
+    "input": "pool 203.0.113.7",
+    "expected": "pool <ip>"
+  },
+  {
+    "name": "version_is_not_ip",
+    "input": "pasiv 0.6.2 on Windows 10.0.26100",
+    "expected": "pasiv 0.6.2 on Windows 10.0.26100"
+  },
+  {
+    "name": "four_part_version_is_not_ip",
+    "input": "v6.22.2.1234 exited",
+    "expected": "v6.22.2.1234 exited"
+  },
+  {
+    "name": "loopback_and_unspecified_kept",
+    "input": "api 127.0.0.1:42169 up, bind 0.0.0.0:80, peer 10.1.2.3",
+    "expected": "api 127.0.0.1:42169 up, bind 0.0.0.0:80, peer <ip>"
+  },
+  {
+    "name": "ipv6_full",
+    "input": "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+    "expected": "<ip>"
+  },
+  {
+    "name": "ipv6_compressed",
+    "input": "bind [fe80::1ff:fe23:4567:890a]",
+    "expected": "bind [<ip>]"
+  },
+  {
+    "name": "ipv6_loopback",
+    "input": "from ::1 port 9",
+    "expected": "from <ip> port 9"
+  },
+  {
+    "name": "ipv4_mapped_ipv6",
+    "input": "peer ::ffff:10.0.0.1",
+    "expected": "peer ::ffff:<ip>"
+  },
+  {
+    "name": "rust_path_is_not_ip",
+    "input": "pasiv_core::fee::add failed in std::fs::read",
+    "expected": "pasiv_core::fee::add failed in std::fs::read"
+  },
+  {
+    "name": "timestamp_is_not_ip",
+    "input": "at 12:30:45 UTC",
+    "expected": "at 12:30:45 UTC"
+  },
+  {
+    "name": "mac_address",
+    "input": "iface 3c:22:fb:aa:bb:01",
+    "expected": "iface <mac>"
+  },
+  {
+    "name": "host_dot_local",
+    "input": "rig Janes-Mac-Studio.local offline",
+    "expected": "rig <host> offline"
+  },
+  {
+    "name": "host_windows_default",
+    "input": "DESKTOP-4F7Q2RS lost the pool",
+    "expected": "<host> lost the pool"
+  },
+  {
+    "name": "host_apple_style",
+    "input": "worker janes-macbook-pro paused",
+    "expected": "worker <host> paused"
+  },
+  {
+    "name": "host_dot_lan",
+    "input": "node rack.lan",
+    "expected": "node <host>"
+  },
+  {
+    "name": "clean_message_untouched",
+    "input": "miner exited with code Some(-1073741819) after 5 attempts",
+    "expected": "miner exited with code Some(-1073741819) after 5 attempts"
+  },
+  {
+    "name": "short_words_untouched",
+    "input": "coin XMR via unMineable, PoolUnreachable",
+    "expected": "coin XMR via unMineable, PoolUnreachable"
+  },
+  {
+    "name": "uuid_untouched",
+    "input": "rig 502e35ae-77dc-4a21-b243-dbc9c1170190",
+    "expected": "rig 502e35ae-77dc-4a21-b243-dbc9c1170190"
+  },
+  {
+    "name": "everything_at_once",
+    "input": "/home/x/y 0x71C7656EC7ab88b098defB751B7401B5f6d8976F 10.0.0.1 jane@example.com",
+    "expected": "/home/<user>/y <address> <ip> <email>"
+  },
+  {
+    "name": "empty",
+    "input": "",
+    "expected": ""
+  }
+]
