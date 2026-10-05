@@ -30,9 +30,11 @@ use sentry::ClientInitGuard;
 
 use crate::scrub::{scrub_event, Names};
 
-/// The project's client key. Public by design (it is compiled into every
-/// release); it can only *send* events to this project, never read anything.
-const DSN: &str = "https://e24d4ccdaa18e8971ebe5d7efbb59003@o4511460191567872.ingest.de.sentry.io/4512194840559696";
+/// The `pasivd` project's client key (project 4512203332649040 — its own
+/// Sentry project, apart from the desktop's). Public by design (it is compiled
+/// into every release); it can only *send* events to this project, never read
+/// anything.
+const DSN: &str = "https://2899c84488de4d3284025a70ac4613d5@o4511460191567872.ingest.de.sentry.io/4512203332649040";
 
 /// `pasivd@<version>` — pasivd versions on its own 0.1.x track, apart from
 /// the desktop's `pasiv@…` releases.
