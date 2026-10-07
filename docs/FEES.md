@@ -205,8 +205,11 @@ Pasiv will **not**, in any build:
 
 1. Show ads, or bundle "partner" coins the user didn't choose.
 2. Silently switch the user's pool, coin, or payout address — and never mine
-   at all without an explicit start from the user. (Auto mode is opt-in and
-   shows its reasoning.)
+   on a machine with no payout address of the user's set up. Once one is set
+   up, Pasiv starts with the computer and mines by default; an explicit Stop
+   (app, tray or phone) is final across every restart until the user starts
+   again. (Auto mode is opt-in and shows its reasoning.) *Revised 2026-10-07
+   for 0.6.7: previously "never mine at all without an explicit start".*
 3. Change the Pasiv fee percentage or fee address **without a versioned
    changelog entry and a new signed release.** (Both are compile-time
    constants in this repository.)
