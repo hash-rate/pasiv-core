@@ -26,7 +26,8 @@ pub fn config_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/1/config")
 }
 
-/// The `http` block XMRig should serve.
+/// The runtime config XMRig is started with: the `http` block it should serve,
+/// plus the two switches that keep XMRig from ever writing this file back.
 ///
 /// `restricted: false` is load-bearing: restricted mode 403s `/1/config` and
 /// `/2/config` even to an authenticated caller, which breaks the payout
@@ -34,8 +35,21 @@ pub fn config_url(port: u16) -> String {
 /// token gates the API to the loopback caller that knows it; the API can
 /// rewrite the payout address, so the token is a real secret — see
 /// [`write_runtime_config`] for how it must reach XMRig.
+///
+/// `autosave: false` and `watch: false` are load-bearing too. By default XMRig
+/// rewrites its `-c` file with its WHOLE running config — every pool, wallet
+/// and RandomX setting — at startup and on every `PUT /1/config`, i.e. on
+/// every fee swap. From 2026-10-09 Defender's cloud ML read that rewritten
+/// file as `Trojan:Win32/Bearfoos.A!ml` and quarantined it ~300×/day per
+/// Windows rig. `autosave: false` stops the startup rewrite; the PUT rewrite
+/// ignores it and is stopped by [`write_runtime_config`] leaving the file
+/// read-only. `watch: false` means XMRig never reloads from this file, so a
+/// PUT is applied in memory directly and nothing an antivirus does to the
+/// file afterwards can undo or delay it.
 pub fn runtime_config(token: &str, port: u16) -> serde_json::Value {
     serde_json::json!({
+        "autosave": false,
+        "watch": false,
         "http": {
             "enabled": true,
             "host": "127.0.0.1",
@@ -46,17 +60,35 @@ pub fn runtime_config(token: &str, port: u16) -> serde_json::Value {
     })
 }
 
-/// Write the runtime config readable only by this user, for `-c`.
+/// Write the runtime config readable only by this user, for `-c`, and leave
+/// it READ-ONLY.
 ///
 /// Process argv is world-readable (`ps`, `/proc/<pid>/cmdline`), so the token
 /// must never travel there — both consumers pass this file with `-c` instead.
 /// Created 0600 *before* the token is written, and unlinked first so a
 /// pre-existing file with looser permissions can't be inherited — otherwise
 /// the fix would just move the secret from `ps` to a world-readable file.
+///
+/// Then made read-only (0400 / the Windows read-only attribute) so XMRig's
+/// save-on-`PUT /1/config` fails and the file stays this small `http` block
+/// for the miner's whole life (see [`runtime_config`]). XMRig treats a failed
+/// save as "apply in memory", verified on 6.26.0 on Windows and macOS: three
+/// PUTs, every one applied, file byte-identical. Best effort: if the
+/// attribute cannot be set the miner still starts — exactly as before.
 pub fn write_runtime_config(path: &std::path::Path, token: &str, port: u16) -> std::io::Result<()> {
     use std::io::Write;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
+    }
+    // A read-only file from the previous start cannot be deleted on Windows
+    // until the attribute is cleared; on unix this is a harmless chmod.
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perms = meta.permissions();
+        if perms.readonly() {
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            let _ = std::fs::set_permissions(path, perms);
+        }
     }
     let _ = std::fs::remove_file(path);
     let mut opts = std::fs::OpenOptions::new();
@@ -67,7 +99,27 @@ pub fn write_runtime_config(path: &std::path::Path, token: &str, port: u16) -> s
         opts.mode(0o600);
     }
     let mut f = opts.open(path)?;
-    f.write_all(runtime_config(token, port).to_string().as_bytes())
+    f.write_all(runtime_config(token, port).to_string().as_bytes())?;
+    f.sync_all()?;
+    drop(f);
+    let _ = make_read_only(path);
+    Ok(())
+}
+
+/// Owner-read-only: 0400 on unix (never widening past 0600), the read-only
+/// attribute on Windows.
+fn make_read_only(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o400))
+    }
+    #[cfg(not(unix))]
+    {
+        let mut perms = std::fs::metadata(path)?.permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(path, perms)
+    }
 }
 
 /// Normalise XMRig's `/2/summary` into [`MinerStats`].
@@ -171,6 +223,13 @@ mod tests {
         assert_eq!(v["http"]["access-token"], "tok123");
         assert_eq!(v["http"]["host"], "127.0.0.1");
         assert_eq!(v["http"]["port"], 42_170);
+        // Never let XMRig write the whole miner config back into this file
+        // (the 2026-10-09 Defender Bearfoos.A!ml quarantines).
+        assert_eq!(v["autosave"], false, "startup rewrite must stay off");
+        assert_eq!(
+            v["watch"], false,
+            "a PUT must apply in memory, never via a file reload"
+        );
     }
 
     #[test]
@@ -185,17 +244,51 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600, "the token file must be owner-only");
+            assert_eq!(
+                mode & 0o777,
+                0o400,
+                "the token file must be owner-only and read-only"
+            );
         }
-        // And a looser pre-existing file must not survive a rewrite.
+        // Read-only on every OS, so XMRig's save-on-PUT cannot rewrite it.
+        assert!(std::fs::metadata(&path).unwrap().permissions().readonly());
+        // The NEXT start must still be able to replace it — on Windows a
+        // read-only file cannot be deleted until the attribute is cleared.
+        write_runtime_config(&path, "tok789", 1).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["http"]["access-token"], "tok789");
+        // And a looser pre-existing file (an upgrade from a build that left
+        // it writable, or XMRig's own full-config rewrite) must not survive.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::fs::write(&path, r#"{"pools":[{"user":"old"}]}"#).unwrap();
             write_runtime_config(&path, "tok456", 1).unwrap();
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
+            assert_eq!(mode & 0o777, 0o400);
         }
+        #[cfg(not(unix))]
+        {
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            perms.set_readonly(false);
+            std::fs::set_permissions(&path, perms).unwrap();
+            std::fs::write(&path, r#"{"pools":[{"user":"old"}]}"#).unwrap();
+            write_runtime_config(&path, "tok456", 1).unwrap();
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["http"]["access-token"], "tok456");
+        assert!(
+            v.get("pools").is_none(),
+            "nothing miner-shaped may survive a rewrite"
+        );
+        // Cleanup needs the attribute cleared on Windows.
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        let _ = std::fs::set_permissions(&path, perms);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
