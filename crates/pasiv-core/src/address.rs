@@ -298,8 +298,95 @@ pub fn is_valid_btc_segwit_address(a: &str) -> bool {
     }
 }
 
+/// Bitcoin mainnet payout address, in **any** form the network uses: legacy
+/// P2PKH (`1…`), P2SH (`3…`) and SegWit/Taproot (`bc1…`). Every form is
+/// checksum-verified, not shape-checked.
+///
+/// All three are accepted because unMineable accepts all three (its own regex
+/// is `^[13][…]{25,34}$|^(bc1)[…]{39,59}$`), and a great many people's BTC
+/// address — above all one copied out of an exchange's withdrawal page — is
+/// still a `1…` or `3…`. Rejecting those would turn "choose BTC" into "choose
+/// BTC, if your wallet is new enough", which is a worse failure than the extra
+/// validator costs: the payout pool cannot change an address once mining has
+/// started, so a rejected-but-valid address sends the user to a competitor and
+/// an accepted-but-wrong one pays a stranger forever.
+///
+/// Testnet is rejected throughout: `tb1…` fails the `bc1` prefix, and `m…`,
+/// `n…` and `2…` fail the mainnet version-byte check below.
+pub fn is_valid_btc_address(a: &str) -> bool {
+    is_valid_btc_segwit_address(a) || is_valid_btc_base58_address(a)
+}
+
+/// Legacy base58check Bitcoin: 25 decoded bytes, a MAINNET version byte
+/// (0x00 P2PKH → `1…`, 0x05 P2SH → `3…`), and the trailing 4 bytes equal to
+/// the first 4 of sha256(sha256(payload)) — the same construction
+/// `is_valid_tron_address` checks, which differs only in its version byte.
+fn is_valid_btc_base58_address(a: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    // 25 bytes base58-encode to 26-34 chars; the leading '1' of a P2PKH
+    // address is the encoded 0x00, so length alone cannot gate the version.
+    if !(26..=34).contains(&a.len()) {
+        return false;
+    }
+    let Some(raw) = base58_decode(a) else {
+        return false;
+    };
+    if raw.len() != 25 || !matches!(raw[0], 0x00 | 0x05) {
+        return false;
+    }
+    let check = Sha256::digest(Sha256::digest(&raw[..21]));
+    check[..4] == raw[21..]
+}
+
 #[cfg(test)]
 mod tests {
+    /// Every mainnet form, checksum-verified. The user's call (2026-10-14) was
+    /// to accept all of them rather than bech32 only: USDT is the cash-like
+    /// route and BTC the hold-it one, so the BTC path has to take the address
+    /// people already have — which, from an exchange, is usually `1…` or `3…`.
+    #[test]
+    fn btc_accepts_every_mainnet_form_and_verifies_the_checksum() {
+        // P2PKH (0x00) and P2SH (0x05), checksums verified independently.
+        let p2pkh = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
+        let p2sh = "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy";
+        assert!(is_valid_btc_address(p2pkh));
+        assert!(is_valid_btc_address(p2sh));
+        assert!(is_valid_btc_address("12higDjoCCNXSA95xZMWUdPvXNmkAduhWv"));
+        // SegWit v0 and Taproot still go through the bech32/bech32m path.
+        assert!(is_valid_btc_address(
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+        ));
+        assert!(is_valid_btc_address(
+            "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0"
+        ));
+
+        // A single transposed character must fail the checksum, not squeak
+        // through on shape — the pool cannot change an address once mining
+        // has started, so this is the last line of defence.
+        assert!(!is_valid_btc_address("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb"));
+        assert!(!is_valid_btc_address("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLz"));
+
+        // Testnet is not a payout target: tb1 fails the prefix, m/n/2 the
+        // mainnet version byte.
+        assert!(!is_valid_btc_address(
+            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+        ));
+        assert!(!is_valid_btc_address("mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn"));
+        assert!(!is_valid_btc_address("2N2JD6wb56AfK4tfmM6PwdVmoYk2dCKf4Br"));
+
+        // Other assets' addresses are never Bitcoin, and vice versa — the
+        // selector infers the asset from the shape, so a crossover here would
+        // pay the wrong chain.
+        for other in [
+            "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",         // TRON
+            "0x000000000000000000000000000000000000dEaD", // BSC
+        ] {
+            assert!(!is_valid_btc_address(other), "{other}");
+        }
+        assert!(!is_valid_tron_address(p2pkh));
+        assert!(!is_valid_bsc_address(p2pkh));
+    }
+
     #[test]
     fn btc_segwit_checksums_bip173_and_bip350_vectors() {
         // BIP-173 (bech32, witness v0) and BIP-350 (bech32m, v1 Taproot).

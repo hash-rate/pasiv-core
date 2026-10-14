@@ -19,7 +19,8 @@
 //!   (plain) and 443 (TLS).
 
 use crate::address::{
-    is_valid_bsc_address, is_valid_prl_address, is_valid_tron_address, is_valid_xmr_address,
+    is_valid_bsc_address, is_valid_btc_address, is_valid_prl_address, is_valid_tron_address,
+    is_valid_xmr_address,
 };
 
 /// What unMineable pays the user in.
@@ -29,6 +30,13 @@ pub enum PayoutAsset {
     UsdtBsc,
     /// USDT on TRON — the common exchange-deposit network.
     UsdtTron,
+    /// Bitcoin, paid to the user's own address. The slow-but-holdable
+    /// counterpart to USDT: USDT is the cash-like route (1.5 USDT threshold,
+    /// paid daily), BTC the store-of-value one. Its payout threshold is far
+    /// higher — 0.00075 BTC, read live per address from the pool, never
+    /// hard-coded here — so a caller offering this must show the user what
+    /// that means for THEIR hashrate before they commit.
+    Btc,
     /// Paid in the mined coin itself, for crypto-native users.
     Prl,
     Xmr,
@@ -40,6 +48,7 @@ impl PayoutAsset {
     pub fn symbol(self) -> &'static str {
         match self {
             PayoutAsset::UsdtBsc | PayoutAsset::UsdtTron => "USDT",
+            PayoutAsset::Btc => "BTC",
             PayoutAsset::Prl => "PRL",
             PayoutAsset::Xmr => "XMR",
         }
@@ -49,9 +58,26 @@ impl PayoutAsset {
         match self {
             PayoutAsset::UsdtBsc => is_valid_bsc_address(address),
             PayoutAsset::UsdtTron => is_valid_tron_address(address),
+            PayoutAsset::Btc => is_valid_btc_address(address),
             PayoutAsset::Prl => is_valid_prl_address(address),
             PayoutAsset::Xmr => is_valid_xmr_address(address),
         }
+    }
+
+    /// Which selectable payout asset an address is for, by its shape alone.
+    ///
+    /// Covers only the assets a user can CHOOSE on the unMineable route — USDT
+    /// on either network, and BTC. The shapes cannot collide (`0x…` BSC, `T…`
+    /// TRON, `1…`/`3…`/`bc1…` BTC), and each arm checksum-verifies, so a
+    /// wrong-chain address is rejected rather than silently re-homed.
+    ///
+    /// `Xmr` and `Prl` are deliberately absent. An XMR address in an account's
+    /// payout field means the *direct* route, not unMineable, and `pasivd`
+    /// decides between the two on exactly that distinction — teaching this
+    /// function about XMR would re-home those rigs onto the wrong pool.
+    pub fn infer(address: &str) -> Option<PayoutAsset> {
+        Self::usdt_for(address)
+            .or_else(|| is_valid_btc_address(address).then_some(PayoutAsset::Btc))
     }
 
     /// Which USDT network an address belongs to, if it is a USDT address.
@@ -216,6 +242,63 @@ mod tests {
         assert!(address_api_url(PayoutAsset::UsdtTron, TRON)
             .unwrap()
             .starts_with("https://api.unminable.com/v4/address/T"));
+    }
+
+    /// BTC as the second selectable payout asset (user's call, 2026-10-14:
+    /// USDT for cash-like spending, BTC for holding). Every mainnet address
+    /// form is accepted — see `address::is_valid_btc_address` for why.
+    #[test]
+    fn btc_is_a_payout_asset_in_every_mainnet_address_form() {
+        const P2PKH: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
+        const P2SH: &str = "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy";
+        const BECH32: &str = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+
+        assert_eq!(PayoutAsset::Btc.symbol(), "BTC");
+        for a in [P2PKH, P2SH, BECH32] {
+            assert!(PayoutAsset::Btc.validate(a), "{a}");
+        }
+        // A bad checksum must never reach the pool: the address can't be
+        // changed once mining starts.
+        assert!(!PayoutAsset::Btc.validate("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb"));
+
+        // The login carries unMineable's BTC symbol, the sanitised worker and
+        // the referral, in that order.
+        assert_eq!(
+            login(PayoutAsset::Btc, P2SH, "DESKTOP-1", "pasiv").as_deref(),
+            Some("BTC:3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy.DESKTOP_1#pasiv")
+        );
+        assert_eq!(login(PayoutAsset::Btc, "not-an-address", "w", ""), None);
+
+        // The pool links address BTC, not USDT.
+        assert!(stats_url(PayoutAsset::Btc, BECH32)
+            .unwrap()
+            .ends_with("?coin=BTC"));
+    }
+
+    /// Shape-inference must map each selectable asset to its own chain, and
+    /// must keep ignoring XMR — an XMR payout address means the DIRECT route,
+    /// and `pasivd` tells the two routes apart on exactly that.
+    #[test]
+    fn infer_maps_each_shape_and_still_ignores_the_direct_route() {
+        assert_eq!(PayoutAsset::infer(BSC), Some(PayoutAsset::UsdtBsc));
+        assert_eq!(PayoutAsset::infer(TRON), Some(PayoutAsset::UsdtTron));
+        assert_eq!(
+            PayoutAsset::infer("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"),
+            Some(PayoutAsset::Btc)
+        );
+        assert_eq!(
+            PayoutAsset::infer("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"),
+            Some(PayoutAsset::Btc)
+        );
+        // A Monero address is NOT an unMineable choice.
+        let xmr = format!("4{}", "A".repeat(94));
+        assert_eq!(PayoutAsset::infer(&xmr), None);
+        assert_eq!(PayoutAsset::infer("nonsense"), None);
+        // usdt_for is unchanged: BTC is not a USDT address.
+        assert_eq!(
+            PayoutAsset::usdt_for("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"),
+            None
+        );
     }
 
     #[test]
