@@ -5,8 +5,8 @@
 //! commands and zero UI. A daemon can't do SIWE, so it pairs like a TV app:
 //!
 //!   pasivd claim   → prints a 6-char code; approve it in the Pasiv companion
-//!   pasivd run     → mines Monero (CPU) paid to YOUR address — in USDT via
-//!                    unMineable when the account has a USDT payout, else in
+//!   pasivd run     → mines Monero (CPU) paid to YOUR address — in USDT or BTC
+//!                    via unMineable when the account has one, else in
 //!                    XMR direct — publishes state to the fleet, obeys
 //!                    start/stop from the phone
 //!
@@ -245,8 +245,9 @@ pub(crate) struct DeviceConfig {
     secret: String,
     #[serde(default)]
     payout_xmr: Option<String>,
-    /// USDT payout (unMineable route) from the owner's account, when they
-    /// chose it in the desktop app. Preferred over payout_xmr — see `target`.
+    /// unMineable payout (USDT, or BTC from 0.1.10 — asset by address shape)
+    /// from the owner's account, when they chose it in the desktop app.
+    /// Preferred over payout_xmr — see `target`.
     #[serde(default)]
     payout_usdt: Option<String>,
     /// Crash reports (`crate::sentry`): `false` turns them off. On by
@@ -263,7 +264,7 @@ fn default_true() -> bool {
 #[derive(Debug, PartialEq)]
 pub(crate) struct MiningTarget {
     pub pool: String,
-    /// The owner's login: `USDT:<addr>.<host>#<referral>` on unMineable, or
+    /// The owner's login: `USDT:<addr>.<host>#<referral>` (or `BTC:…`) on unMineable, or
     /// the bare XMR address on the direct pool.
     pub user: String,
     /// The fee slice's login: the treasury on unMineable, FEE_ADDRESS_XMR direct.
@@ -284,13 +285,20 @@ impl MiningTarget {
     }
 }
 
-/// The route rule, pure so it is tested: a valid USDT address on the account
-/// means the owner chose unMineable (the desktop publishes it only then);
-/// otherwise the direct Monero pool with the XMR address, exactly as before.
+/// The route rule, pure so it is tested: a valid unMineable payout address on
+/// the account — USDT (BSC/TRON) or, from 0.1.10, BTC — means the owner chose
+/// unMineable (the desktop publishes it only then); the asset is read from the
+/// address's shape (`PayoutAsset::infer`, shapes cannot collide). Otherwise the
+/// direct Monero pool with the XMR address, exactly as before.
+///
+/// The account field is still called `payout_usdt` (renaming it would strand
+/// every older node); it holds whichever unMineable asset the owner chose. A
+/// node older than 0.1.10 reads a BTC address there as invalid and keeps its
+/// direct-XMR route (still the owner's own address) until it self-updates.
 pub(crate) fn target(usdt: Option<&str>, xmr: Option<&str>, host: &str) -> Option<MiningTarget> {
     use pasiv_core::unmineable::{login, Algo, PayoutAsset};
     if let Some(addr) = usdt.map(str::trim) {
-        if let Some(asset) = PayoutAsset::usdt_for(addr) {
+        if let Some(asset) = PayoutAsset::infer(addr) {
             if let Some(user) = login(asset, addr, host, fee::UNMINEABLE_REFERRAL) {
                 return Some(MiningTarget {
                     pool: format!("{}:{}", Algo::RandomX.host(), Algo::PORT),
@@ -1220,13 +1228,14 @@ async fn cloud_link(link: CloudLink) {
     }
 }
 
-/// Turn on unMineable's daily auto pay for the owner's USDT address if it is
+/// Turn on unMineable's daily auto pay for the owner's payout address (USDT or
+/// BTC) if it is
 /// off (it is off for every new address, and off means "press Payout now on
 /// the website"). Needs the address's unMineable id, which exists once the
 /// address has mined; before that this quietly tries again tomorrow.
 async fn ensure_auto_pay(client: &reqwest::Client, address: &str) {
     use pasiv_core::unmineable::{address_api_url, auto_pay_url, PayoutAsset};
-    let Some(url) = PayoutAsset::usdt_for(address).and_then(|a| address_api_url(a, address)) else {
+    let Some(url) = PayoutAsset::infer(address).and_then(|a| address_api_url(a, address)) else {
         return;
     };
     let Ok(resp) = client.get(url).send().await else {
@@ -1732,6 +1741,33 @@ mod hardware_uplink_tests {
             t.fee,
             "BTC:bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90.rack_1"
         );
+    }
+
+    #[test]
+    fn a_btc_account_mines_on_unmineable_paid_in_btc() {
+        for addr in [
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+            "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+        ] {
+            let t = target(Some(addr), Some(FEE_ADDRESS_XMR), "rack-1").unwrap();
+            assert_eq!(t.pool, "rx.unmineable.com:3333");
+            assert_eq!(t.user, format!("BTC:{addr}.rack_1#drp0-8auk"));
+            assert!(t.unmineable);
+            // The fee side is untouched by the owner's asset.
+            assert_eq!(
+                t.fee,
+                "BTC:bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90.rack_1"
+            );
+        }
+        // A BTC address with one character wrong never leaves the XMR route.
+        let t = target(
+            Some("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb"),
+            Some(FEE_ADDRESS_XMR),
+            "rack",
+        )
+        .unwrap();
+        assert_eq!(t.pool, pool());
     }
 
     #[test]

@@ -102,19 +102,21 @@ pub async fn cmd_doctor() -> Result<(), String> {
     let xmr = payout.as_ref().and_then(|p| p.payout_xmr.as_deref());
     match (usdt, xmr) {
         (Some(a), _)
-            if pasiv_core::address::is_valid_bsc_address(a)
-                || pasiv_core::address::is_valid_tron_address(a) =>
+            if pasiv_core::unmineable::PayoutAsset::infer(a).is_some() =>
         {
+            let sym = pasiv_core::unmineable::PayoutAsset::infer(a)
+                .map(|x| x.symbol())
+                .unwrap_or("USDT");
             report(
                 "PASS",
                 "payout",
-                "USDT address shape ok (paid via unMineable)".into(),
+                format!("{sym} address ok (paid via unMineable)"),
             )
         }
         (Some(_), _) => report(
             "FAIL",
             "payout",
-            "saved USDT address has the wrong shape".into(),
+            "saved unMineable payout address (USDT or BTC) is not valid".into(),
         ),
         (None, Some(a)) if is_valid_xmr_address(a) => {
             report("PASS", "payout", "XMR address shape ok".into())

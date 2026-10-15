@@ -8,6 +8,18 @@ Pasiv makes money **only when you do.** The mechanics below are documented in
 full — and, since this repository exists, implemented in the open — so anyone
 can see exactly what they pay and confirm it against the app's own fee ledger.
 
+> **Revision 2026-10-15 (Pasiv 0.6.10, pasivd 0.1.10): BTC as an optional
+> payout asset.** No fee changes. On the unMineable route you may now be paid
+> in **BTC** to your own Bitcoin address (`1…`, `3…` or `bc1…`, checksum-verified)
+> instead of USDT. USDT stays the default and the fast one; BTC is for holding.
+> unMineable pays BTC only once the balance reaches its BTC threshold
+> (0.00075 BTC on 2026-10-15 — read live from the pool, never hard-coded),
+> which is far higher in dollars than USDT's 1.5, so the app shows that
+> threshold and an estimate of the wait at your machine's own rate **before**
+> you choose, and asks you to confirm. Pasiv's 4% and the BTC treasury it is
+> paid to are unchanged; unMineable's fee and Pasiv's referral are as below.
+> Still non-custodial: the pool pays the address you entered (item 7).
+
 > **Revision 2026-09-28 (Pasiv 0.5.9): Share & earn, made honest.** Changed,
 > in the open, as never-list item 3 requires:
 > 1. **A friend's share is counted over the life of the install, not per

@@ -5,7 +5,7 @@ and no GUI. `pasivd` mines Monero on the CPU, paid to your own address — in
 USDT via unMineable when your account has a USDT payout (the default for new
 Pasiv installs), otherwise in XMR direct — and reports state to the fleet, so a
 screenless machine shows up in the phone companion alongside your desktops. It
-versions **independently** of the desktop app (currently `0.1.9`).
+versions **independently** of the desktop app (currently `0.1.10`).
 
 A daemon can't do a wallet signature (no browser), so it pairs like a TV app.
 
