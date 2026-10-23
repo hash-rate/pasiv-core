@@ -218,7 +218,7 @@ fn detect_gpus() -> Vec<GpuInfo> {
 }
 
 /// AMD Radeon eligibility for Pearl: an RX 6000/7000/9000 card with at least
-/// 4 GB, as SRBMiner-Multi's OpenCL path ran it (docs/spikes/AMD-phase0.md).
+/// 4 GB, as SRBMiner-Multi's OpenCL path ran it (AMD phase-0 measurement).
 /// NOT APPLIED since the signed Pearl engine replaced SRBMiner (2026-10): the
 /// engine is built CUDA-only, so `detect_amd` lists every Radeon as
 /// ineligible (the UI can still say what it is) until an AMD card is measured

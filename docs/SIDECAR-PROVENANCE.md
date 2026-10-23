@@ -41,7 +41,7 @@ Each fetch verifies, in order, and refuses to continue on any mismatch:
 Upstream: <https://github.com/doktor83/SRBMiner-Multi> — release `3.5.3`.
 
 **These values are not maintained by hand.** They are the pin the build actually
-uses: `tool/sidecars.json` in the private build repo, read by `build.rs` at
+uses: the sidecar pin file in the private build repo, read by `build.rs` at
 compile time and verified at download time (archive SHA-256, then extracted
 binary SHA-256). A test fails if this document and that pin ever disagree, which
 is how the previous drift was found — this file described **3.4.6** while every
@@ -95,7 +95,7 @@ determination from Microsoft addresses the quarantine.
 
 ## Bumping a version
 
-1. Update `version` and the three URLs/hashes per target in `tool/sidecars.json`.
+1. Update `version` and the three URLs/hashes per target in the sidecar pin file.
 2. `npm run fetch:sidecars` — it will refuse to install anything whose hashes do
    not match, so a bad paste fails loudly rather than shipping.
 3. Re-verify against the author's published checksum file for the new release and

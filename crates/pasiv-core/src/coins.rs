@@ -370,7 +370,7 @@ pub const ROSTER: &[CoinSpec] = &[
         // desk score vs Pearl's ~$0.65 and RVN's ~$0.03 — Pearl stays the top
         // earner, Ergo is the 2019-vintage alternative next to a young token
         // that has emergency-hardforked twice this quarter. Full scoring +
-        // three-source cross-check: docs/spikes/ERGO-phase0.md.
+        // three-source cross-check: the Ergo phase-0 measurement (private notes).
         miner: MinerId::SrbMiner,
         algo: Some("autolykos2"),
         // HeroMiners' "Low-End Hardware" port (diff 4G) — right for a single
@@ -405,7 +405,7 @@ pub const ROSTER: &[CoinSpec] = &[
         ticker: "etc",
         // GPU -> Ethereum Classic via SRBMiner-Multi (algo `etchash`) — the same
         // engine as Pearl/Ravencoin/Ergo, so this is a roster row and not a new
-        // sidecar. VERIFIED ON HARDWARE 2026-09-02 (docs/spikes/SPIKE-ETC-ETCHASH-AMD.md):
+        // sidecar. VERIFIED ON HARDWARE 2026-09-02 (ETC etchash measurement, private notes):
         // SRBMiner 3.5.3 on an RTX 4060, 14.01 MH/s, first accepted share 3m49s
         // after connect, 1 accepted / 0 rejected, and 2Miners' own account API
         // showed the worker online.
