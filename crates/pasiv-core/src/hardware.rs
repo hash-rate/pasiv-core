@@ -217,10 +217,19 @@ fn detect_gpus() -> Vec<GpuInfo> {
     }
 }
 
-/// AMD Radeon eligibility for Pearl (pearlhash via SRBMiner-Multi, which runs
-/// it on RDNA2 and newer — docs/spikes/AMD-phase0.md): an RX 6000/7000/9000
-/// card with at least 4 GB. Older GCN/Polaris/RDNA1 cards are listed (so the
-/// UI can say why) but not eligible. Pure, unit-tested on every platform.
+/// AMD Radeon eligibility for Pearl: an RX 6000/7000/9000 card with at least
+/// 4 GB, as SRBMiner-Multi's OpenCL path ran it (docs/spikes/AMD-phase0.md).
+/// NOT APPLIED since the signed Pearl engine replaced SRBMiner (2026-10): the
+/// engine is built CUDA-only, so `detect_amd` lists every Radeon as
+/// ineligible (the UI can still say what it is) until an AMD card is measured
+/// on the engine's OpenCL backend — see `AMD_ON_ENGINE`. Kept, with its
+/// tests, as the rule that comes back then. Pure, unit-tested everywhere.
+/// Whether an RDNA2+ Radeon counts as eligible for the GPU lane. False until
+/// the Pearl engine's OpenCL backend has been measured on an AMD card in the
+/// lab (the desktop app's signed-engine spike, Gate A5 — not run: no AMD
+/// card). Flipping this re-enables the `amd_eligible` rule unchanged.
+pub const AMD_ON_ENGINE: bool = false;
+
 pub fn amd_eligible(name: &str, vram_mb: u64) -> bool {
     let n = name.to_ascii_uppercase();
     let rdna2_plus = ["RX 6", "RX 7", "RX 9"].iter().any(|p| {
@@ -251,7 +260,7 @@ fn parse_amd_registry(out: &str) -> Vec<GpuInfo> {
             Some(GpuInfo {
                 name: name.to_string(),
                 vram_mb,
-                eligible: amd_eligible(name, vram_mb),
+                eligible: AMD_ON_ENGINE && amd_eligible(name, vram_mb),
             })
         })
         .collect()
@@ -307,7 +316,7 @@ fn detect_amd() -> Option<Vec<GpuInfo>> {
             .and_then(|o| parse_lspci_mm_name(&o))
             .unwrap_or_else(|| "AMD Radeon GPU".to_string());
         gpus.push(GpuInfo {
-            eligible: amd_eligible(&name, vram_mb),
+            eligible: AMD_ON_ENGINE && amd_eligible(&name, vram_mb),
             name,
             vram_mb,
         });
@@ -556,7 +565,10 @@ mod tests {
         assert_eq!(g.len(), 2, "NVIDIA lines are the nvidia-smi probe's job");
         assert_eq!(g[0].name, "AMD Radeon RX 6700 XT");
         assert_eq!(g[0].vram_mb, 12272);
-        assert!(g[0].eligible);
+        // The RX 6700 XT passes the AMD rule; whether that makes it eligible
+        // is the engine switch (CUDA-only engine today).
+        assert_eq!(g[0].eligible, AMD_ON_ENGINE);
+        assert!(amd_eligible(&g[0].name, g[0].vram_mb));
         assert!(!g[1].eligible);
     }
 

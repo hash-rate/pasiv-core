@@ -86,16 +86,22 @@ impl CoinSpec {
     /// its supervisor under the same cfg). Offering it on Linux or Windows
     /// would give the user a coin to pick that silently mines nothing, so the
     /// picker, the profit ranking and `start_mining` all filter on this.
-    /// Verus is macOS-only (in-process VerusHash C++ builds only there); SRBMiner
-    /// is the inverse — GPU/Pearl on Windows/Linux, no macOS build. XMRig runs
-    /// everywhere. Explicit arms so a new miner must state its platforms; the
-    /// `#[allow]` keeps `-D warnings` happy where the cfg! arms constant-fold
-    /// into a `matches!` (which bit the Linux gate before — see git history).
+    /// Verus is macOS-only (in-process VerusHash C++ builds only there); the
+    /// Pearl engine is the inverse — GPU on Windows/Linux, CUDA, no macOS
+    /// build. XMRig runs everywhere. SRBMiner is RETIRED: the desktop app
+    /// dropped its adapter, its Defender-exclusion flow and its download with
+    /// the signed Pearl engine (2026-10), one week ahead of the 1 November 2026
+    /// date already set for Ravencoin/Ergo, so its coins are available on no
+    /// platform — a row that stayed pickable would mine nothing. Explicit arms
+    /// so a new miner must state its platforms; the `#[allow]` keeps
+    /// `-D warnings` happy where the cfg! arms constant-fold into a `matches!`
+    /// (which bit the Linux gate before — see git history).
     #[allow(clippy::match_like_matches_macro)]
     pub fn is_available(&self) -> bool {
         match self.miner {
             MinerId::Verus => cfg!(target_os = "macos"),
-            MinerId::SrbMiner | MinerId::PearlNative => cfg!(not(target_os = "macos")),
+            MinerId::PearlNative => cfg!(not(target_os = "macos")),
+            MinerId::SrbMiner => false,
             MinerId::Xmrig => true,
         }
     }
@@ -261,17 +267,25 @@ pub const ROSTER: &[CoinSpec] = &[
     CoinSpec {
         coin: Coin::Prl,
         ticker: "prl",
-        // GPU → Pearl via SRBMiner-Multi (algo `pearlhash`) on LuckyPool's plain
-        // stratum. Windows/Linux only (no macOS SRBMiner build) AND needs an
-        // eligible GPU — lib.rs only adds the SrbMiner supervisor when
-        // hardware::detect() finds a CUDA Turing+/≥3 GB card (or, in beta, an
-        // AMD RX 6000/7000/9000 with ≥4 GB), so on a GPU-less box start_all
-        // reports "PRL can't be mined on this machine yet".
-        // SRBMiner takes a 2% pearlhash dev fee (third-party, disclosed like
-        // XMRig's 1%); LuckyPool takes its own pool fee. On this direct route
-        // Pasiv's own 4% fee is XMR-only, so it never applies to PRL here; on
-        // the unMineable route it applies to every coin, Pearl included.
-        miner: MinerId::SrbMiner,
+        // GPU → Pearl via the engine Pasiv builds from source and signs itself
+        // (CPPminer, MIT; `MinerId::PearlNative`) on LuckyPool's plain stratum.
+        // Windows/Linux only AND needs an eligible GPU — lib.rs only adds the
+        // GPU supervisor when hardware::detect() finds a CUDA Turing+/≥3 GB
+        // card, so on a GPU-less box start_all reports "PRL can't be mined on
+        // this machine yet". The engine is CUDA-only today, so the AMD RX
+        // 6000/7000/9000 beta that SRBMiner's OpenCL path carried is off until
+        // an AMD card is measured on it (hardware::amd_eligible).
+        // Until 2026-10 this row was SRBMiner-Multi (`pearlhash`), closed,
+        // unsigned and Defender-quarantined on sight, which is why every
+        // Windows prompt Pasiv showed traced back to this lane; the signed
+        // engine runs clean from a scanned folder with zero prompts
+        // (the desktop app's signed-engine spike findings). The engine runs
+        // with its fee switched off (`--no-fee`), so the 2% third-party dev
+        // fee SRBMiner kept is gone. LuckyPool takes its own pool fee. On this
+        // direct route Pasiv's own 4% fee is XMR-only, so it never applies to
+        // PRL here; on the unMineable route it applies to every coin, Pearl
+        // included.
+        miner: MinerId::PearlNative,
         algo: Some("pearlhash"),
         // Was pearl.alphapool.tech:5571, shipped in 0.3.8 on a "verify on the test
         // box" note that never happened. Verified now, and it does not work: the
