@@ -31,8 +31,8 @@ docs/                 FEES.md (the binding never-list) + these notes
 - **`coins`** — the direct-route roster (installs from before 0.5.0, until
   their owner switches): for every supported coin, exactly which miner runs
   it, which pool it submits to, its address rule, its dashboard link. Adding
-  a coin is one row here. Zephyr, Salvium, Verus, Ravencoin and Ergo are
-  retiring: Pasiv stops mining them on 1 November 2026.
+  a coin is one row here. Ravencoin and Ergo retired with Pasiv 0.6.11
+  (2026-10-23); Zephyr, Salvium and Verus retire on 1 November 2026.
 - **`address`** — payout validators (paste-time shape checks; the pool's
   `mining.authorize` remains the authoritative check).
 - **`state`** — the miner state machine. The fee engine is driven by it,

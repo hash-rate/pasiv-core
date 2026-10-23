@@ -26,8 +26,8 @@ acknowledge within a few days and keep you posted through the fix.
 **In scope:** this repository (the pasiv-core crate and the pasivd daemon), the update manifest + release
 artifacts (`hash-rate/pasiv-releases`), and the website (`pasiv.network`).
 
-**Out of scope:** the vendored third-party miners (XMRig, SRBMiner) and the pools —
-report those upstream. Pasiv runs XMRig as a separate sidecar process, not linked into
+**Out of scope:** the upstream miner code Pasiv ships (XMRig; the CPPminer source the
+Pearl engine is built from) and the pools — report those upstream. Pasiv runs XMRig as a separate sidecar process, not linked into
 the app.
 
 ## What we guarantee

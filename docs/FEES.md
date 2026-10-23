@@ -107,7 +107,7 @@ you to discover.
 | Pasiv's referral | 0.25% | Paid **to Pasiv by unMineable, out of unMineable's own fee** | Not taken from your earnings; disclosed because Pasiv benefits |
 | Share & earn (optional) | 1 or 2 of Pasiv's 4 points | Paid **to the friend whose code you entered, out of Pasiv's 4%** | Not an extra fee — it's part of the 4%; only if you entered a code; ends after 12 months |
 | Pool fee (direct route) | ~1% | Your chosen pool (MoneroOcean, LuckyPool, …) | Per that pool's own published terms |
-| SRBMiner dev fee | 2% | The SRBMiner-Multi developers | Built into the GPU mining engine (Pearl) |
+| ~~SRBMiner dev fee~~ | ~~2%~~ | — | Gone since 0.6.11: Pasiv's own build of the Pearl engine runs with its fee off, so nothing on the GPU lane goes to a third-party developer |
 | XMRig dev donation | 1% | The XMRig developers | Built into the mining engine Pasiv drives |
 
 **On XMRig's 1%.** Pasiv runs the *stock, official* XMRig binary — fetched from
@@ -135,7 +135,7 @@ The fee is **time-sliced hashrate**, identical in mechanism to XMRig's dev fee
   <https://unmineable.com/address/bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90?coin=BTC> ([`FEE_ADDRESS_TREASURY`](../crates/pasiv-core/src/fee.rs)).
 - **The slice shape depends on how the miner can switch.** The CPU miner
   (XMRig) re-logs-in live, so its slice is 20 s in every 500 s. The GPU miner
-  (SRBMiner) can only switch by restarting, measured at ~19 s from restart to
+  (the Pearl engine, as SRBMiner before it) can only switch by restarting, measured at ~19 s from restart to
   hashing, so its slice is 10 minutes in every 4 h 10 min: the same 4%, with
   warm-up costing you under 0.3% instead of most of a short slice
   ([`slice_shape`](../crates/pasiv-core/src/fee.rs)).
