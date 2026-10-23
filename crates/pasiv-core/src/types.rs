@@ -15,13 +15,23 @@ pub enum MinerId {
     /// stratum client, no vendored sidecar. It never spawns an OS process, so it
     /// writes no pidfile and the reaper never touches it.
     Verus,
+    /// The Pearl engine Pasiv builds from source and signs itself (CPPminer,
+    /// MIT) — the GPU lane's replacement for SRBMiner once it ships. Its
+    /// process is `cppminer[.exe]`; the lane keeps its own pidfile so the
+    /// reaper and the port-squatter check recognise an orphan as ours.
+    PearlNative,
 }
 
 impl MinerId {
     /// Every miner Pasiv knows about — drives the startup reaper so a
     /// crash-orphaned sidecar of any kind gets cleaned up on next launch.
     pub fn all() -> &'static [MinerId] {
-        &[MinerId::Xmrig, MinerId::SrbMiner, MinerId::Verus]
+        &[
+            MinerId::Xmrig,
+            MinerId::SrbMiner,
+            MinerId::Verus,
+            MinerId::PearlNative,
+        ]
     }
 
     /// Pidfile stem — must equal the `id` string a supervisor derives from
@@ -31,6 +41,7 @@ impl MinerId {
             MinerId::Xmrig => "xmrig",
             MinerId::SrbMiner => "srb_miner",
             MinerId::Verus => "verus",
+            MinerId::PearlNative => "pearl_native",
         }
     }
 
@@ -43,6 +54,7 @@ impl MinerId {
             MinerId::Xmrig => "xmrig",
             MinerId::SrbMiner => "srbminer",
             MinerId::Verus => "\0pasiv-in-process-verus",
+            MinerId::PearlNative => "cppminer",
         }
     }
 }

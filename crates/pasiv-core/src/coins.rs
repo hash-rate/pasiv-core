@@ -95,7 +95,7 @@ impl CoinSpec {
     pub fn is_available(&self) -> bool {
         match self.miner {
             MinerId::Verus => cfg!(target_os = "macos"),
-            MinerId::SrbMiner => cfg!(not(target_os = "macos")),
+            MinerId::SrbMiner | MinerId::PearlNative => cfg!(not(target_os = "macos")),
             MinerId::Xmrig => true,
         }
     }
