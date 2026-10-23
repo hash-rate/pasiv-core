@@ -217,6 +217,12 @@ fn detect_gpus() -> Vec<GpuInfo> {
     }
 }
 
+/// Whether an RDNA2+ Radeon counts as eligible for the GPU lane. False until
+/// the Pearl engine's OpenCL backend has been measured on an AMD card (the
+/// private signed-engine notes, Gate A5 — not run: no AMD card). Flipping
+/// this re-enables the `amd_eligible` rule unchanged.
+pub const AMD_ON_ENGINE: bool = false;
+
 /// AMD Radeon eligibility for Pearl: an RX 6000/7000/9000 card with at least
 /// 4 GB, as SRBMiner-Multi's OpenCL path ran it (AMD phase-0 measurement).
 /// NOT APPLIED since the signed Pearl engine replaced SRBMiner (2026-10): the
@@ -224,12 +230,6 @@ fn detect_gpus() -> Vec<GpuInfo> {
 /// ineligible (the UI can still say what it is) until an AMD card is measured
 /// on the engine's OpenCL backend — see `AMD_ON_ENGINE`. Kept, with its
 /// tests, as the rule that comes back then. Pure, unit-tested everywhere.
-/// Whether an RDNA2+ Radeon counts as eligible for the GPU lane. False until
-/// the Pearl engine's OpenCL backend has been measured on an AMD card in the
-/// lab (the desktop app's signed-engine spike, Gate A5 — not run: no AMD
-/// card). Flipping this re-enables the `amd_eligible` rule unchanged.
-pub const AMD_ON_ENGINE: bool = false;
-
 pub fn amd_eligible(name: &str, vram_mb: u64) -> bool {
     let n = name.to_ascii_uppercase();
     let rdna2_plus = ["RX 6", "RX 7", "RX 9"].iter().any(|p| {

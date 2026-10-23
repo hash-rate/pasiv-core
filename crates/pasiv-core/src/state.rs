@@ -140,7 +140,8 @@ pub enum Input {
     #[allow(dead_code)]
     GovernorResume,
     /// Resume a lane the governor PARKED rather than paused in place: a miner
-    /// with no in-place pause (SRBMiner) is stopped for Game Mode and has to
+    /// with no in-place pause (the GPU engine — Pearl today, SRBMiner before
+    /// it) is stopped for Game Mode and has to
     /// be launched again, so it comes back through warm-up, not straight to
     /// Mining — "Mining" is only ever entered by real hashes.
     GovernorRelaunch,

@@ -10,13 +10,18 @@ use serde::Serialize;
 #[serde(rename_all = "snake_case")]
 pub enum MinerId {
     Xmrig,
+    /// SRBMiner-Multi — RETIRED in 0.6.11 (2026-10-23) when the signed Pearl
+    /// engine took over the GPU lane; `CoinSpec::is_available` is false for
+    /// every row that names it. The variant stays so the startup reaper still
+    /// recognises an orphan left by an older install.
     SrbMiner,
     /// Verus — the only IN-PROCESS miner: native arm64 VerusHash + a Rust
     /// stratum client, no vendored sidecar. It never spawns an OS process, so it
     /// writes no pidfile and the reaper never touches it.
     Verus,
     /// The Pearl engine Pasiv builds from source and signs itself (CPPminer,
-    /// MIT) — the GPU lane's replacement for SRBMiner once it ships. Its
+    /// MIT) — the GPU lane's engine since 0.6.11 (2026-10-23), replacing
+    /// SRBMiner. CUDA-only today (AMD paused: `hardware::AMD_ON_ENGINE`). Its
     /// process is `cppminer[.exe]`; the lane keeps its own pidfile so the
     /// reaper and the port-squatter check recognise an orphan as ours.
     PearlNative,
@@ -73,21 +78,24 @@ pub enum Coin {
     /// `verus` adapter. Address is 'R'-prefixed base58check.
     Vrsc,
     Prl,
-    /// Ravencoin — KawPow on the GPU, mined via SRBMiner-Multi (`-a kawpow`), the
-    /// same engine as Pearl. An ASIC-*resistant* GPU coin, so a consumer card
-    /// holds real network share (unlike Kaspa/Alephium, whose ASIC networks a
-    /// GPU can't touch). A second GPU coin, so it's a manual pick alongside PRL —
-    /// one SRBMiner sidecar, one GPU coin at a time. Address is 'R'-prefixed
-    /// base58check (Bitcoin-family version byte 60, same shape as VRSC).
+    /// Ravencoin — RETIRED in 0.6.11 (2026-10-23) with SRBMiner-Multi, the
+    /// engine it mined KawPow on (`-a kawpow`), then shared with Pearl. An
+    /// ASIC-*resistant* GPU coin, so a consumer card held real network share
+    /// (unlike Kaspa/Alephium, whose ASIC networks a GPU can't touch). Was a
+    /// manual pick alongside PRL — one SRBMiner sidecar, one GPU coin at a
+    /// time. Address is 'R'-prefixed base58check (Bitcoin-family version byte
+    /// 60, same shape as VRSC).
     Rvn,
-    /// Ergo — Autolykos2 on the GPU, mined via SRBMiner-Multi (`-a autolykos2`),
-    /// the same engine as Pearl/Ravencoin: a roster row, not a new sidecar.
-    /// ASIC-resistant (memory-hard by design), 1% engine dev fee (half of
-    /// pearlhash's 2%), ~2.5 GB working set so it fits the 3–6 GB cards that
-    /// KawPow's DAG refuses. Address is a '9'-prefixed base58 P2PK.
+    /// Ergo — RETIRED in 0.6.11 (2026-10-23) with SRBMiner-Multi, which mined
+    /// it as Autolykos2 (`-a autolykos2`) on the same engine as Pearl/Ravencoin:
+    /// a roster row, not a new sidecar. ASIC-resistant (memory-hard by design),
+    /// 1% engine dev fee then (half of pearlhash's 2%), ~2.5 GB working set so
+    /// it fit the 3–6 GB cards that KawPow's DAG refused. Address is a
+    /// '9'-prefixed base58 P2PK.
     Erg,
     /// Ethereum Classic — Etchash (Dagger-Hashimoto) on the GPU via
-    /// SRBMiner-Multi. EXPERIMENTAL and dark by default (`CoinSpec.experimental`).
+    /// SRBMiner-Multi, so unreachable on every platform since that engine
+    /// retired in 0.6.11. EXPERIMENTAL and dark by default (`CoinSpec.experimental`).
     /// The first roster coin whose memory requirement is a moving target: see
     /// `crate::etchash`.
     Etc,
@@ -113,7 +121,8 @@ pub struct DeviceStat {
     pub hashrate: f64,
 }
 
-/// Normalized stats shape — XMRig HTTP and SRBMiner API both map here.
+/// Normalized stats shape — every runner's stats map here (XMRig's HTTP API,
+/// the Pearl engine's, and SRBMiner's while it lasted).
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct MinerStats {
     /// Normalized to H/s.

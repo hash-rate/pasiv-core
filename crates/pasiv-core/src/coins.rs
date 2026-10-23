@@ -13,8 +13,11 @@
 //! they never become dead code here. Keep the two in sync — same tolerated
 //! pattern as the address validators.
 //!
-//! Zephyr, Salvium, Verus, Ravencoin and Ergo are retiring: Pasiv stops mining
-//! them on 1 November 2026, and their rows go in 0.6.0.
+//! Zephyr, Salvium and Verus are retiring: Pasiv stops mining them on
+//! 1 November 2026. Ravencoin and Ergo went a week early, with 0.6.11
+//! (2026-10-23): their only engine, SRBMiner-Multi, retired when the signed
+//! Pearl engine shipped, so `is_available()` refuses them everywhere and their
+//! rows stay only until the November roster cleanup.
 
 use crate::types::{Coin, MinerId};
 
@@ -33,7 +36,8 @@ pub struct CoinSpec {
     /// Minimum GPU VRAM (MB) this coin's algorithm needs — 0 for CPU coins.
     /// Gated in `commands::resolve_gpu_for_start` / `coin_availability` against
     /// the LARGEST eligible GPU, so a too-small card is refused with the real
-    /// reason instead of failing at runtime (KawPow's DAG on a 4 GB card).
+    /// reason instead of failing at runtime (the motivating case was KawPow's
+    /// ~6 GB DAG on a 4 GB card, back when Ravencoin was live).
     pub min_vram_mb: u64,
     /// Payout-address validity for this coin.
     pub validate: fn(&str) -> bool,
@@ -296,7 +300,8 @@ pub const ROSTER: &[CoinSpec] = &[
         // looked healthy while earning nothing.
         //
         // LuckyPool is the fallback that same note named, and is one of the three
-        // pools SRBMiner's own start-mining-pearl.bat ships with. Verified live on
+        // pools SRBMiner's own start-mining-pearl.bat shipped with (SRBMiner was
+        // the Pearl engine until 0.6.11). Verified live, on that engine, on
         // an RTX 4070 SUPER: connects, jobs flow, 11 accepted / 0 rejected in the
         // first 191 s at 2460 MHz / 219 W / 99% utilisation, and the pool's
         // /api/stats_address confirms the shares landed server-side.
@@ -326,10 +331,14 @@ pub const ROSTER: &[CoinSpec] = &[
     CoinSpec {
         coin: Coin::Rvn,
         ticker: "rvn",
-        // GPU → Ravencoin via SRBMiner-Multi (algo `kawpow`) — the SAME engine and
-        // GPU lane as Pearl, so adding it cost a roster row, not a new sidecar. An
-        // ASIC-*resistant* algorithm, which is the whole point: a consumer GPU
-        // holds real network share on KawPow, so it earns (unlike Kaspa/Alephium,
+        // RETIRED with 0.6.11 (2026-10-23), a week ahead of its 1 November 2026
+        // date: Ravencoin mined on SRBMiner-Multi (algo `kawpow`), and that
+        // engine left with the signed Pearl engine, so `is_available()` is false
+        // on every platform. The row stays until the November roster cleanup;
+        // the tests pin the retirement. History: the SAME engine and GPU lane as
+        // Pearl then was, so adding it cost a roster row, not a new sidecar. An
+        // ASIC-*resistant* algorithm, which was the whole point: a consumer GPU
+        // holds real network share on KawPow, so it earned (unlike Kaspa/Alephium,
         // whose ASIC networks would rank a GPU at ~$0). Windows/Linux + eligible
         // NVIDIA GPU only, like PRL.
         miner: MinerId::SrbMiner,
@@ -352,8 +361,8 @@ pub const ROSTER: &[CoinSpec] = &[
         dashboard_url: rvn_dashboard,
         coingecko_id: "ravencoin",
         // Different PoW (KawPow on GPU) — can't be RandomX-ranked, and auto_rankable
-        // also requires MinerId::Xmrig, so RVN is a manual pick like PRL/VRSC. Its
-        // live earnings estimate comes through profit::ravencoin_rate(), not this
+        // also requires MinerId::Xmrig, so RVN was a manual pick like PRL/VRSC. Its
+        // live earnings estimate came through profit::ravencoin_rate(), not this
         // HeroMiners-shaped stats path.
         stats_url: "",
         wallet_url: "https://pasiv.network/mine/ravencoin",
@@ -362,10 +371,14 @@ pub const ROSTER: &[CoinSpec] = &[
     CoinSpec {
         coin: Coin::Erg,
         ticker: "erg",
-        // GPU → Ergo via SRBMiner-Multi (algo `autolykos2`) — the same engine
-        // and GPU lane as Pearl/Ravencoin, so a roster row is the whole cost.
+        // RETIRED with 0.6.11 (2026-10-23), same story as RVN above: Ergo mined
+        // on SRBMiner-Multi (algo `autolykos2`), the engine the signed Pearl
+        // engine replaced, so `is_available()` is false everywhere and the row
+        // stays only until the November roster cleanup. History: the same engine
+        // and GPU lane as Pearl/Ravencoin, so a roster row was the whole cost.
         // ASIC-resistant (memory-hard), 1.00% engine dev fee (Readme-verified —
-        // half of pearlhash's 2%). The third GPU coin and the established-
+        // half of pearlhash's 2%; no third-party GPU dev fee survives today).
+        // The third GPU coin and the established-
         // network hedge: ~$0.11/day on a 4060-class card at the 2026-08-17
         // desk score vs Pearl's ~$0.65 and RVN's ~$0.03 — Pearl stays the top
         // earner, Ergo is the 2019-vintage alternative next to a young token
@@ -395,7 +408,7 @@ pub const ROSTER: &[CoinSpec] = &[
         dashboard_url: erg_dashboard,
         coingecko_id: "ergo",
         // Different PoW (Autolykos2 on GPU) — never RandomX-ranked; live
-        // estimate comes through profit::ergo_rate(), not this stats path.
+        // estimate came through profit::ergo_rate(), not this stats path.
         stats_url: "",
         wallet_url: "https://pasiv.network/mine/ergo",
         experimental: false,
@@ -403,21 +416,28 @@ pub const ROSTER: &[CoinSpec] = &[
     CoinSpec {
         coin: Coin::Etc,
         ticker: "etc",
-        // GPU -> Ethereum Classic via SRBMiner-Multi (algo `etchash`) — the same
-        // engine as Pearl/Ravencoin/Ergo, so this is a roster row and not a new
-        // sidecar. VERIFIED ON HARDWARE 2026-09-02 (ETC etchash measurement, private notes):
+        // GPU -> Ethereum Classic via SRBMiner-Multi (algo `etchash`) — the engine
+        // that also ran Pearl/Ravencoin/Ergo until 0.6.11, so this was a roster
+        // row and not a new sidecar. With SRBMiner retired (2026-10) the row is
+        // unreachable on every platform (`is_available()`), on top of being
+        // experimental; the lane needs an engine again before anything below
+        // is more than a record. (Historical; SRBMiner retired 0.6.11:)
+        // VERIFIED ON HARDWARE 2026-09-02 (ETC etchash measurement, private notes):
         // SRBMiner 3.5.3 on an RTX 4060, 14.01 MH/s, first accepted share 3m49s
         // after connect, 1 accepted / 0 rejected, and 2Miners' own account API
         // showed the worker online.
         //
         // Two things make ETC different from the other GPU coins:
-        //  * Its dev fee is the LOWEST of our GPU algos — 0.65%, against
-        //    pearlhash's 2.00%, autolykos2's 1.00% and kawpow's 0.85%.
+        //  * Its dev fee was the LOWEST of SRBMiner's GPU algos — 0.65%, against
+        //    pearlhash's 2.00%, autolykos2's 1.00% and kawpow's 0.85% (all gone
+        //    with SRBMiner; the signed Pearl engine runs with its fee off).
         //  * Its address is a plain EVM `0x`, so a wallet-sign-in user already
         //    has one and needs no new wallet at all.
         //
         // EXPERIMENTAL: dark until an AMD card verifies the vendor claim that is
-        // this lane's whole reason for existing.
+        // this lane's whole reason for existing — and, since 2026-10, until the
+        // lane has an engine at all (AMD is paused on the Pearl engine too, see
+        // `hardware::AMD_ON_ENGINE`).
         miner: MinerId::SrbMiner,
         algo: Some("etchash"),
         // 2Miners: 1.0% fee, 0.1 ETC minimum, PPLNS, NO registration — the
@@ -647,12 +667,14 @@ mod etc_lane_tests {
     /// each call site that someone will forget.
     ///
     /// ⚠️ HONEST LIMIT: on macOS this test passes for the WRONG REASON. ETC is a
-    /// SRBMiner coin and there is no macOS SRBMiner build, so `is_available()`
+    /// SRBMiner coin and there was no macOS SRBMiner build, so `is_available()`
     /// already excludes it and deleting the `!c.experimental` filter changes
     /// nothing here — verified by mutation on 2026-09-02, where removing the
-    /// filter left all tests green on a Mac. The guard is only load-bearing on
-    /// Windows/Linux and MUST be mutation-checked there before this lane is
-    /// promoted. `no_experimental_coin_ever_reaches_available` below is the
+    /// filter left all tests green on a Mac. Since SRBMiner retired in 0.6.11
+    /// the same is true on EVERY platform (see the comment inside), so the
+    /// guard is load-bearing nowhere today and MUST be mutation-checked on
+    /// Windows/Linux before this lane is promoted on a new engine.
+    /// `no_experimental_coin_ever_reaches_available` below is the
     /// platform-independent half.
     #[test]
     fn etc_is_dark_by_default() {
@@ -703,7 +725,8 @@ mod etc_lane_tests {
     #[test]
     fn etc_does_not_use_the_static_vram_gate() {
         assert_eq!(etc().min_vram_mb, 0, "ETC sizes its DAG at start time");
-        // Every OTHER GPU coin does use it, so the zero is specific, not a bug.
+        // Every OTHER SRBMiner-era GPU coin (retired rows too) does use it, so
+        // the zero is specific, not a bug.
         for c in ROSTER
             .iter()
             .filter(|c| c.miner == MinerId::SrbMiner && c.ticker != "etc")

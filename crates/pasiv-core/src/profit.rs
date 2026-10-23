@@ -8,8 +8,9 @@
 //! Every auto-rankable coin shares one algorithm (RandomX rx/0), so for a
 //! fixed hashrate the ranking reduces to `price × block_reward ÷
 //! network_difficulty` (block time cancels out). Coins on other PoWs (Verus,
-//! Pearl, Ravencoin, Ergo) are priced by their share of that coin's own
-//! network instead, and are never auto-switched against the RandomX family.
+//! Pearl — and Ravencoin/Ergo until they retired in 0.6.11) are priced by
+//! their share of that coin's own network instead, and are never
+//! auto-switched against the RandomX family.
 
 use serde::Serialize;
 
@@ -23,7 +24,8 @@ pub const SWITCH_MARGIN: f64 = 1.08;
 /// The Verus mainnet block interval. Fixed by consensus.
 pub const VERUS_BLOCK_SECS: f64 = 60.0;
 
-/// Ravencoin's block reward in RVN. Fixed by consensus between halvings: 5000
+/// Ravencoin's block reward in RVN (coin retired in 0.6.11; the constant stays
+/// for the share-of-network tests). Fixed by consensus between halvings: 5000
 /// at launch → 2500 (Jan 2022) → **1250 (the Jan 2026 halving, in effect)**.
 /// The next halving is ~2030, so a constant is honest until then; if RVN's
 /// live estimate is ever off by a clean 2×, this is the first thing to check.
@@ -32,7 +34,8 @@ pub const RVN_BLOCK_REWARD: f64 = 1250.0;
 /// Ravencoin's target block time (seconds) — 1 minute, a consensus constant.
 pub const RVN_BLOCK_SECS: f64 = 60.0;
 
-/// Ergo's block reward in ERG — 3 flat in the EIP-27 re-emission era.
+/// Ergo's block reward in ERG — 3 flat in the EIP-27 re-emission era (coin
+/// retired in 0.6.11; the constant stays for the share-of-network tests).
 /// Revisit only on an emission-schedule change.
 pub const ERG_BLOCK_REWARD: f64 = 3.0;
 
@@ -71,8 +74,8 @@ pub fn net_score(gross: f64, coin: Coin) -> f64 {
 
 /// USD/day at 1 kH/s for a coin priced by its **share of network hashrate** —
 /// the model for coins that can't be RandomX-ranked because they run a
-/// different PoW (Verus/VerusHash, Pearl/pearlhash, Ravencoin/KawPow,
-/// Ergo/Autolykos2). Your share of the network at 1 kH/s is
+/// different PoW (Verus/VerusHash, Pearl/pearlhash; Ravencoin/KawPow and
+/// Ergo/Autolykos2 until 0.6.11). Your share of the network at 1 kH/s is
 /// `1000 / network_hashps`, times blocks/day, times reward, times price.
 /// `None` if any input is non-positive, matching `score()`.
 pub fn share_of_network_score(

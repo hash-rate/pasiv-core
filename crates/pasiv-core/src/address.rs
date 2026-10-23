@@ -98,7 +98,8 @@ pub fn is_valid_vrsc_address(a: &str) -> bool {
     is_base58(a) && a.starts_with('R') && a.len() == 34
 }
 
-/// Ravencoin (RVN) payout address. Bitcoin-family base58check with pubkey version
+/// Ravencoin (RVN) payout address — coin retired in 0.6.11, validator kept for
+/// its roster row and tests. Bitcoin-family base58check with pubkey version
 /// byte 60 (0x3C), which yields a single-'R' prefix and a 34-char string — the
 /// SAME shape as Verus (VRSC also uses version 60), so this is byte-for-byte the
 /// VRSC rule. Shape-only, like every validator here: the pool's authorize is the
@@ -108,7 +109,8 @@ pub fn is_valid_rvn_address(a: &str) -> bool {
     is_base58(a) && a.starts_with('R') && a.len() == 34
 }
 
-/// Ergo (ERG) payout address — mainnet P2PK: base58, leading `9`, 51 chars
+/// Ergo (ERG) payout address (coin retired in 0.6.11; validator kept for its
+/// roster row and tests) — mainnet P2PK: base58, leading `9`, 51 chars
 /// (network byte 0x00 + P2PK type 0x01 → base58 always starts '9'; e.g.
 /// `9f4QF8AD1nQ3nJahQVkMj8hFSVVzVom77b52JU7EW71Zexg6N8v`). Shape-only, like
 /// every validator here — the pool's authorize is the authoritative check.

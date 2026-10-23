@@ -9,7 +9,8 @@
 //! address for the direct route (never-list: changing either requires a new
 //! signed release and a changelog entry). The slice is 20 s in every 500 s for
 //! a miner that switches live (XMRig) and 10 min in every 4 h 10 min for one
-//! that must restart (SRBMiner) — 4% either way. Every completed slice is
+//! that must restart (the Pearl engine; SRBMiner before it) — 4% either way.
+//! Every completed slice is
 //! appended to a local, human-readable JSONL ledger.
 //!
 //! Fail-safe by design: a runner only diverts to the fee address during an
@@ -38,7 +39,7 @@ pub const FEE_ADDRESS_XMR: &str =
     "47jfXhesYLvN5M8Qzy5j7PCwd99kZKdwNKwxqonrdEDVVzopGUfNApn1NK98sPE7wgGzsEtvMYM1cZChVpDHasabFH1MZ1f";
 
 /// 20 s per ~8.3 minute window = 4% of Mining time — the live-switch (XMRig)
-/// slice; see `slice_shape` for the restart-based (SRBMiner) one.
+/// slice; see `slice_shape` for the restart-based (GPU engine) one.
 pub const SLICE_WINDOW_SECS: u64 = 500;
 pub const SLICE_SECS: u64 = 20;
 
@@ -114,8 +115,9 @@ pub const UNMINEABLE_REFERRAL: &str = "drp0-8auk";
 pub enum SwitchKind {
     /// XMRig re-logs-in live over its HTTP API — no downtime, so short slices.
     HotSwap,
-    /// SRBMiner has no live switch: a slice edge is a restart, measured at
-    /// ~19 s from kill to hashing on RTX 4060s (2026-09-25). Two
+    /// The GPU lane has no live switch (the Pearl engine today, SRBMiner
+    /// before it): a slice edge is a restart, measured at ~19 s from kill to
+    /// hashing on RTX 4060s (2026-09-25, SRBMiner). Two
     /// edges per window, so the window is long enough that warm-up costs the
     /// user ~0.25% instead of the ~7% a 20 s slice would.
     Restart,
