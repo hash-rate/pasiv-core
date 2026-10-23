@@ -295,7 +295,12 @@ impl MiningTarget {
 /// every older node); it holds whichever unMineable asset the owner chose. A
 /// node older than 0.1.10 reads a BTC address there as invalid and keeps its
 /// direct-XMR route (still the owner's own address) until it self-updates.
-pub(crate) fn target(usdt: Option<&str>, xmr: Option<&str>, host: &str) -> Option<MiningTarget> {
+pub(crate) fn target(
+    usdt: Option<&str>,
+    xmr: Option<&str>,
+    host: &str,
+    fee_worker: &str,
+) -> Option<MiningTarget> {
     use pasiv_core::unmineable::{login, Algo, PayoutAsset};
     if let Some(addr) = usdt.map(str::trim) {
         if let Some(asset) = PayoutAsset::infer(addr) {
@@ -303,7 +308,10 @@ pub(crate) fn target(usdt: Option<&str>, xmr: Option<&str>, host: &str) -> Optio
                 return Some(MiningTarget {
                     pool: format!("{}:{}", Algo::RandomX.host(), Algo::PORT),
                     user,
-                    fee: fee::unmineable_fee_login(host),
+                    // The treasury's pool page is public and lists workers by
+                    // name: a fee slice logs in as an opaque token, never the
+                    // node's hostname (`fee_worker_name`).
+                    fee: fee::unmineable_fee_login(fee_worker),
                     unmineable: true,
                 });
             }
@@ -654,12 +662,23 @@ async fn poll_payout(client: &reqwest::Client, cfg: &DeviceConfig) -> Result<Pol
     }))
 }
 
-fn target_for(payout: &PayoutCache, host: &str) -> Option<MiningTarget> {
+fn target_for(payout: &PayoutCache, host: &str, fee_worker: &str) -> Option<MiningTarget> {
     target(
         payout.payout_usdt.as_deref(),
         payout.payout_xmr.as_deref(),
         host,
+        fee_worker,
     )
+}
+
+/// The worker name a FEE slice logs in with: `pasiv-` + 12 hex of the
+/// SHA-256 of the device id. The owner's own pool page may show the hostname
+/// (their page); the treasury's and an affiliate's pages are PUBLIC and list
+/// every worker by name, which until pasivd 0.1.11 exposed node hostnames.
+pub(crate) fn fee_worker_name(device_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(device_id.trim().as_bytes()));
+    pasiv_core::unmineable::worker_name(&format!("pasiv-{}", &digest[..12]))
 }
 
 /// How long until the next poll after this one: an hour once the cloud
@@ -681,6 +700,7 @@ async fn startup_target(
     client: &reqwest::Client,
     cfg: &DeviceConfig,
     host: &str,
+    fee_worker: &str,
 ) -> (MiningTarget, PayoutCache, Duration) {
     let mut payout = cached_payout(cfg);
     let mut warned_no_payout = false;
@@ -691,7 +711,7 @@ async fn startup_target(
                     save_payout_cache(&fresh);
                     payout = fresh;
                 }
-                if let Some(t) = target_for(&payout, host) {
+                if let Some(t) = target_for(&payout, host, fee_worker) {
                     return (t, payout, POLL_OK);
                 }
                 if !warned_no_payout {
@@ -703,7 +723,7 @@ async fn startup_target(
                 POLL_RETRY
             }
             Ok(Poll::NotClaimed(status)) => {
-                if let Some(t) = target_for(&payout, host) {
+                if let Some(t) = target_for(&payout, host, fee_worker) {
                     eprintln!(
                         "warning: the cloud reports this device as {status} — mining on the \
                          cached payout anyway; re-claim it from the companion to restore remote control"
@@ -714,7 +734,7 @@ async fn startup_target(
                 POLL_RETRY
             }
             Err(e) => {
-                if let Some(t) = target_for(&payout, host) {
+                if let Some(t) = target_for(&payout, host, fee_worker) {
                     eprintln!("warning: cloud unreachable ({e}) — mining on the cached payout");
                     return (t, payout, POLL_RETRY);
                 }
@@ -752,9 +772,11 @@ async fn cmd_run() -> Result<(), String> {
         .map_err(|_| format!("no config at {} — run `pasivd claim` first", path.display()))?;
     let cfg: DeviceConfig = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
     let host = hostname();
+    let fee_worker = fee_worker_name(&cfg.device_id);
     let client = http_client();
 
-    let (mut tgt, mut payout, first_poll_in) = startup_target(&client, &cfg, &host).await;
+    let (mut tgt, mut payout, first_poll_in) =
+        startup_target(&client, &cfg, &host, &fee_worker).await;
     sentry::set_route(tgt.unmineable);
 
     // The miner binary, fetched and pinned. A failure here is no longer
@@ -847,7 +869,7 @@ async fn cmd_run() -> Result<(), String> {
                     if fresh == payout {
                         continue;
                     }
-                    let Some(new_tgt) = target_for(&fresh, &host) else {
+                    let Some(new_tgt) = target_for(&fresh, &host, &fee_worker) else {
                         eprintln!(
                             "warning: the account no longer has a payout — still mining on the \
                              one this node last heard; set one in the Pasiv app"
@@ -1699,7 +1721,7 @@ mod tests {
 
 #[cfg(test)]
 mod hardware_uplink_tests {
-    use super::{pool, target, FEE_ADDRESS_XMR};
+    use super::{fee_worker_name, pool, target, FEE_ADDRESS_XMR};
     /// pasivd sends `serde_json::to_value(hardware::detect())` in its rig row,
     /// and the mobile companion reads exactly these keys off it (see
     /// pasiv-mobile Rig.fromRow: cpu_model, cpu_cores, usable_threads). This is
@@ -1730,6 +1752,7 @@ mod hardware_uplink_tests {
             Some("0x000000000000000000000000000000000000dEaD"),
             Some(FEE_ADDRESS_XMR),
             "rack-1",
+            "pasiv-0123456789ab",
         )
         .unwrap();
         assert_eq!(t.pool, "rx.unmineable.com:3333");
@@ -1739,7 +1762,7 @@ mod hardware_uplink_tests {
         );
         assert_eq!(
             t.fee,
-            "BTC:bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90.rack_1"
+            "BTC:bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90.pasiv_0123456789ab"
         );
     }
 
@@ -1750,14 +1773,20 @@ mod hardware_uplink_tests {
             "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
             "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
         ] {
-            let t = target(Some(addr), Some(FEE_ADDRESS_XMR), "rack-1").unwrap();
+            let t = target(
+                Some(addr),
+                Some(FEE_ADDRESS_XMR),
+                "rack-1",
+                "pasiv-0123456789ab",
+            )
+            .unwrap();
             assert_eq!(t.pool, "rx.unmineable.com:3333");
             assert_eq!(t.user, format!("BTC:{addr}.rack_1#drp0-8auk"));
             assert!(t.unmineable);
             // The fee side is untouched by the owner's asset.
             assert_eq!(
                 t.fee,
-                "BTC:bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90.rack_1"
+                "BTC:bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90.pasiv_0123456789ab"
             );
         }
         // A BTC address with one character wrong never leaves the XMR route.
@@ -1765,19 +1794,36 @@ mod hardware_uplink_tests {
             Some("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb"),
             Some(FEE_ADDRESS_XMR),
             "rack",
+            "pasiv-0123456789ab",
         )
         .unwrap();
         assert_eq!(t.pool, pool());
     }
 
+    /// The fee worker is opaque: no hostname, no raw device id, stable.
+    #[test]
+    fn fee_worker_is_an_opaque_hash_of_the_device_id() {
+        let w = fee_worker_name("4a505df0-1111-2222-3333-444444444444");
+        assert!(w.starts_with("pasiv_") && w.len() == 18, "{w}");
+        assert!(!w.contains("4a505df0"));
+        assert_eq!(w, fee_worker_name(" 4a505df0-1111-2222-3333-444444444444 "));
+        assert_ne!(w, fee_worker_name("other-device"));
+    }
+
     #[test]
     fn no_usdt_keeps_the_direct_monero_pool() {
-        let t = target(None, Some(FEE_ADDRESS_XMR), "rack").unwrap();
+        let t = target(None, Some(FEE_ADDRESS_XMR), "rack", "pasiv-0123456789ab").unwrap();
         assert_eq!(t.pool, pool());
         assert_eq!(t.fee, FEE_ADDRESS_XMR);
         // An invalid USDT address never moves a node off its working route.
-        let t2 = target(Some("0x12"), Some(FEE_ADDRESS_XMR), "rack").unwrap();
+        let t2 = target(
+            Some("0x12"),
+            Some(FEE_ADDRESS_XMR),
+            "rack",
+            "pasiv-0123456789ab",
+        )
+        .unwrap();
         assert_eq!(t2.pool, pool());
-        assert!(target(None, None, "rack").is_none());
+        assert!(target(None, None, "rack", "pasiv-0123456789ab").is_none());
     }
 }
