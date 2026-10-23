@@ -538,6 +538,14 @@ mod tests {
         for c in ROSTER.iter().filter(|c| c.miner == MinerId::Verus) {
             assert_eq!(c.is_available(), cfg!(target_os = "macos"));
         }
+        // The Pearl engine is CUDA: Windows/Linux. SRBMiner's rows are retired
+        // on every platform — a row that stayed pickable would mine nothing.
+        for c in ROSTER.iter().filter(|c| c.miner == MinerId::PearlNative) {
+            assert_eq!(c.is_available(), cfg!(not(target_os = "macos")));
+        }
+        for c in ROSTER.iter().filter(|c| c.miner == MinerId::SrbMiner) {
+            assert!(!c.is_available(), "{} retired with SRBMiner", c.ticker);
+        }
 
         let avail: Vec<&str> = available().map(|c| c.ticker).collect();
         assert!(avail.contains(&"xmr"), "XMR is available on every platform");
@@ -653,14 +661,14 @@ mod etc_lane_tests {
             !available().any(|c| c.ticker == "etc"),
             "an experimental coin must not reach the picker, ranker or doctor"
         );
-        // …but it is still reachable for diagnostics and these tests — on the
-        // platforms that have an SRBMiner build at all. On macOS ETC is absent
-        // for the ordinary platform reason, which this asserts rather than
-        // silently passing on a technicality.
-        assert_eq!(
-            available_including_experimental().any(|c| c.ticker == "etc"),
-            cfg!(not(target_os = "macos")),
-            "ETC follows the SRBMiner platform gate like every other GPU coin"
+        // …and since SRBMiner retired (2026-10) it is reachable NOWHERE, not
+        // even for diagnostics: its row names MinerId::SrbMiner, which
+        // `is_available()` refuses on every platform. (Until then this asserted
+        // the SRBMiner platform gate — present off macOS — and that is what
+        // the Linux release leg caught when the gate closed.)
+        assert!(
+            !available_including_experimental().any(|c| c.ticker == "etc"),
+            "ETC retired with SRBMiner on every platform"
         );
     }
 
