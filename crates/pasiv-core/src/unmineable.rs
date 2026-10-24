@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! unMineable — the payout route every new install uses from 0.5.0 (decided
-//! 2026-09-25). Installs from before 0.5.0 keep the direct route (`coins`)
-//! until their owner switches to USDT payouts.
+//! unMineable — Pasiv's ONE payout route (the default from 0.5.0, decided
+//! 2026-09-25; the only route from 0.7.0, decided 2026-10-24, when the legacy
+//! direct-pool route and its XMR-only fee retired).
 //!
 //! The rig mines an ALGORITHM (PearlPow on the GPU, RandomX on the CPU) and
-//! unMineable pays the user a chosen ASSET (USDT by default) straight to the
-//! user's own address, once a day, from a small threshold. Pasiv never holds
+//! unMineable pays the user a chosen ASSET straight to the user's own
+//! address, once a day, from a small threshold. The asset is either
+//! account-wide — USDT (the default) or BTC, one address for every lane — or
+//! native per lane: the GPU lane paid in PRL to a Pearl address, the CPU lane
+//! in XMR to a Monero address ("Advanced: native coins"). A lane with no
+//! native address falls back to the account-wide address. Pasiv never holds
 //! funds: the pool pays the address the user entered (never-list item 7).
 //!
 //! Facts this module relies on, checked against unMineable's public API and
@@ -22,6 +26,7 @@ use crate::address::{
     is_valid_bsc_address, is_valid_btc_address, is_valid_prl_address, is_valid_tron_address,
     is_valid_xmr_address,
 };
+use crate::types::Coin;
 
 /// What unMineable pays the user in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,7 +42,11 @@ pub enum PayoutAsset {
     /// hard-coded here — so a caller offering this must show the user what
     /// that means for THEIR hashrate before they commit.
     Btc,
-    /// Paid in the mined coin itself, for crypto-native users.
+    /// Paid in the mined coin itself ("Advanced: native coins", 0.7.0): PRL
+    /// to a Pearl address for the GPU lane, XMR to a Monero address for the
+    /// CPU lane. Chosen per LANE — see [`PayoutAsset::native_for`]. Live
+    /// thresholds on 2026-10-24: 1 PRL and 0.03 XMR, paid daily; read live
+    /// per address (`address_api_url`), never hard-coded.
     Prl,
     Xmr,
 }
@@ -64,20 +73,33 @@ impl PayoutAsset {
         }
     }
 
-    /// Which selectable payout asset an address is for, by its shape alone.
+    /// Which ACCOUNT-WIDE payout asset an address is for, by its shape alone:
+    /// USDT on either network, or BTC — the one address every lane falls back
+    /// to. The shapes cannot collide (`0x…` BSC, `T…` TRON, `1…`/`3…`/`bc1…`
+    /// BTC), and each arm checksum-verifies, so a wrong-chain address is
+    /// rejected rather than silently re-homed.
     ///
-    /// Covers only the assets a user can CHOOSE on the unMineable route — USDT
-    /// on either network, and BTC. The shapes cannot collide (`0x…` BSC, `T…`
-    /// TRON, `1…`/`3…`/`bc1…` BTC), and each arm checksum-verifies, so a
-    /// wrong-chain address is rejected rather than silently re-homed.
-    ///
-    /// `Xmr` and `Prl` are deliberately absent. An XMR address in an account's
-    /// payout field means the *direct* route, not unMineable, and `pasivd`
-    /// decides between the two on exactly that distinction — teaching this
-    /// function about XMR would re-home those rigs onto the wrong pool.
+    /// `Xmr` and `Prl` are deliberately absent: a native address is chosen
+    /// per lane, keyed by the coin the lane mines (`native_for`), never
+    /// inferred from a shape in the account-wide field — so a Monero address
+    /// pasted where USDT belongs is refused, not quietly re-routed.
     pub fn infer(address: &str) -> Option<PayoutAsset> {
         Self::usdt_for(address)
             .or_else(|| is_valid_btc_address(address).then_some(PayoutAsset::Btc))
+    }
+
+    /// The native payout asset for a lane mining `coin` — the coin itself,
+    /// paid by unMineable to an address of that chain: `Prl` for Pearl,
+    /// `Xmr` for the RandomX family (Monero; the retired Zephyr/Salvium
+    /// variants map here too, since a RandomX lane is paid in XMR). `None`
+    /// for a coin unMineable does not pay natively, so a caller can never
+    /// build a native login for it.
+    pub fn native_for(coin: Coin) -> Option<PayoutAsset> {
+        match coin {
+            Coin::Prl => Some(PayoutAsset::Prl),
+            Coin::Xmr | Coin::Zeph | Coin::Sal => Some(PayoutAsset::Xmr),
+            Coin::Vrsc | Coin::Rvn | Coin::Erg | Coin::Etc => None,
+        }
     }
 
     /// Which USDT network an address belongs to, if it is a USDT address.
@@ -275,11 +297,11 @@ mod tests {
             .ends_with("?coin=BTC"));
     }
 
-    /// Shape-inference must map each selectable asset to its own chain, and
-    /// must keep ignoring XMR — an XMR payout address means the DIRECT route,
-    /// and `pasivd` tells the two routes apart on exactly that.
+    /// Shape-inference must map each account-wide asset to its own chain and
+    /// never a native coin: a Monero address in the account-wide field is
+    /// refused, not re-routed (native payouts are keyed by LANE, below).
     #[test]
-    fn infer_maps_each_shape_and_still_ignores_the_direct_route() {
+    fn infer_maps_each_account_wide_shape_and_never_a_native_coin() {
         assert_eq!(PayoutAsset::infer(BSC), Some(PayoutAsset::UsdtBsc));
         assert_eq!(PayoutAsset::infer(TRON), Some(PayoutAsset::UsdtTron));
         assert_eq!(
@@ -290,7 +312,7 @@ mod tests {
             PayoutAsset::infer("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"),
             Some(PayoutAsset::Btc)
         );
-        // A Monero address is NOT an unMineable choice.
+        // A Monero address is NOT an account-wide choice (it is a per-lane one).
         let xmr = format!("4{}", "A".repeat(94));
         assert_eq!(PayoutAsset::infer(&xmr), None);
         assert_eq!(PayoutAsset::infer("nonsense"), None);
@@ -299,6 +321,61 @@ mod tests {
             PayoutAsset::usdt_for("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"),
             None
         );
+    }
+
+    /// "Advanced: native coins" (0.7.0): each lane's coin names its native
+    /// asset, the login carries that asset's symbol and the coin's own
+    /// address, and a wrong-chain address never reaches the pool.
+    #[test]
+    fn native_payout_is_per_lane_in_the_lanes_own_coin() {
+        const PRL: &str = "prl1p7avmp9fu3gfkx64629q050q9d9snvwd07avmp9fu3gfkx64629q050q9d9";
+        let xmr = format!("4{}", "A".repeat(94));
+        let sub = format!("8{}", "B".repeat(94));
+
+        assert_eq!(PayoutAsset::native_for(Coin::Prl), Some(PayoutAsset::Prl));
+        assert_eq!(PayoutAsset::native_for(Coin::Xmr), Some(PayoutAsset::Xmr));
+        // The retired RandomX coins still name XMR (a RandomX lane is paid in
+        // XMR); the GPU coins SRBMiner mined, and ETC, have no native payout.
+        for c in [Coin::Zeph, Coin::Sal] {
+            assert_eq!(PayoutAsset::native_for(c), Some(PayoutAsset::Xmr));
+        }
+        for c in [Coin::Vrsc, Coin::Rvn, Coin::Erg, Coin::Etc] {
+            assert_eq!(PayoutAsset::native_for(c), None, "{c:?}");
+        }
+
+        // GPU lane: PRL:<prl>.<worker>#ref on pearlpow; CPU lane: XMR:<xmr>…
+        assert_eq!(
+            login(PayoutAsset::Prl, PRL, "rig-1", "drp0-8auk").as_deref(),
+            Some(format!("PRL:{PRL}.rig_1#drp0-8auk").as_str())
+        );
+        assert_eq!(
+            login(PayoutAsset::Xmr, &xmr, "rig-1", "drp0-8auk").as_deref(),
+            Some(format!("XMR:{xmr}.rig_1#drp0-8auk").as_str())
+        );
+        assert!(
+            login(PayoutAsset::Xmr, &sub, "w", "").is_some(),
+            "subaddress"
+        );
+        // Wrong chain for the lane: refused, never re-homed.
+        assert_eq!(login(PayoutAsset::Prl, &xmr, "w", ""), None);
+        assert_eq!(login(PayoutAsset::Xmr, PRL, "w", ""), None);
+        assert_eq!(login(PayoutAsset::Xmr, BSC, "w", ""), None);
+        // An integrated Monero address (106 chars) is refused — the pool
+        // strips its payment id.
+        assert_eq!(
+            login(PayoutAsset::Xmr, &format!("4{}", "A".repeat(105)), "w", ""),
+            None
+        );
+        // Each (asset, address) is its own pool account: two links.
+        assert!(stats_url(PayoutAsset::Prl, PRL)
+            .unwrap()
+            .ends_with("?coin=PRL"));
+        assert!(stats_url(PayoutAsset::Xmr, &xmr)
+            .unwrap()
+            .ends_with("?coin=XMR"));
+        assert!(address_api_url(PayoutAsset::Prl, PRL)
+            .unwrap()
+            .ends_with("?coin=PRL"));
     }
 
     #[test]
