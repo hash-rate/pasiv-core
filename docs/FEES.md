@@ -8,6 +8,38 @@ Pasiv makes money **only when you do.** The mechanics below are documented in
 full — and, since this repository exists, implemented in the open — so anyone
 can see exactly what they pay and confirm it against the app's own fee ledger.
 
+> **Revision 2026-10-24 (Pasiv 0.7.0, pasivd 0.1.12): one payout route, and
+> "Advanced: native coins".** Changed, in the open, as never-list item 3
+> requires:
+> 1. **The legacy direct route is retired.** Until now an install from before
+>    0.5.0 could still mine straight to a coin's own pool (MoneroOcean for
+>    Monero, LuckyPool for Pearl) with a Monero fee address and a fee rule
+>    that charged **Monero only** — Pearl on that route paid Pasiv nothing.
+>    Every rig now mines on unMineable, the route every install since 0.5.0
+>    uses. A rig that was paying a Monero or Pearl address directly keeps
+>    **the same address**: unMineable now pays it in that coin (below), so
+>    nobody's payout moves and nobody has to be at the keyboard.
+> 2. **You can be paid in the coin you mine.** Beside USDT and BTC, Wallets →
+>    Get paid gains **Advanced: native coins**: a Pearl (PRL) address for the
+>    GPU lane and/or a Monero (XMR) address for the CPU lane, each paid daily
+>    by unMineable in that coin from its own threshold (1 PRL and 0.03 XMR on
+>    2026-10-24 — read live from the pool, never hard-coded; 0.03 XMR is
+>    weeks of a desktop CPU, and the app says so before you choose). A lane
+>    without a native address keeps paying your USDT/BTC address.
+> 3. **The 4% is now the same on every coin, for everyone.** With one route
+>    there is one fee rule ([`fee_fraction`](../crates/pasiv-core/src/fee.rs)):
+>    4% of mining time, to the BTC treasury below, on Monero and Pearl alike.
+>    For a legacy Pearl-direct rig this is a new charge — disclosed here and
+>    in the release notes. The old Monero fee address
+>    (`47jfXhesYLvN5M8Qzy5j7PCwd99kZKdwNKwxqonrdEDVVzopGUfNApn1NK98sPE7wgGzsEtvMYM1cZChVpDHasabFH1MZ1f`)
+>    is retired from the code; ledger lines that name it still read.
+> 4. **Zephyr, Salvium and Verus retire** on the 1 November 2026 date set in
+>    0.5.0 — they only ever had the direct route. A rig still set to one
+>    switches to Monero, paid to its own Monero address if it has one, else it
+>    idles with a "set a payout" notice. Never-list items 2 and 7 hold: the
+>    pool pays the address you entered; nothing is switched silently — this
+>    page, the changelog and the in-app notice say exactly what moved.
+
 > **Revision 2026-10-15 (Pasiv 0.6.10, pasivd 0.1.10): BTC as an optional
 > payout asset.** No fee changes. On the unMineable route you may now be paid
 > in **BTC** to your own Bitcoin address (`1…`, `3…` or `bc1…`, checksum-verified)
@@ -88,11 +120,12 @@ can see exactly what they pay and confirm it against the app's own fee ledger.
 
 That is the whole of it. No ads, no subscription on the free tier, no cut of
 your payouts beyond the 4%. Paused or idle time is charged at zero, and the
-app's own ledger shows every slice. **On the unMineable route (the default from
-0.5.0) the fee applies to every coin you mine**
-([`fee_fraction_unmineable`](../crates/pasiv-core/src/fee.rs)); on the direct
-route, which installs from before 0.5.0 keep until they switch, it applies to
-**Monero only** ([`fee_fraction`](../crates/pasiv-core/src/fee.rs)).
+app's own ledger shows every slice. **The fee applies to every coin you
+mine** — Monero on the CPU, Pearl on the GPU — whatever you choose to be paid
+in: USDT, BTC, or the coin itself
+([`fee_fraction`](../crates/pasiv-core/src/fee.rs)). There is one payout
+route, unMineable; the legacy direct route and its Monero-only rule retired
+in 0.7.0.
 
 ### Other fees, which are not ours
 
@@ -103,10 +136,9 @@ you to discover.
 
 | | Amount | Taken by | |
 |---|---|---|---|
-| unMineable pool fee | 0.75% | unMineable (the default route) | 1%, lowered to 0.75% by Pasiv's referral code in your login |
+| unMineable pool fee | 0.75% | unMineable (the pool, on every payout asset) | 1%, lowered to 0.75% by Pasiv's referral code in your login |
 | Pasiv's referral | 0.25% | Paid **to Pasiv by unMineable, out of unMineable's own fee** | Not taken from your earnings; disclosed because Pasiv benefits |
 | Share & earn (optional) | 1 or 2 of Pasiv's 4 points | Paid **to the friend whose code you entered, out of Pasiv's 4%** | Not an extra fee — it's part of the 4%; only if you entered a code; ends after 12 months |
-| Pool fee (direct route) | ~1% | Your chosen pool (MoneroOcean, LuckyPool, …) | Per that pool's own published terms |
 | ~~SRBMiner dev fee~~ | ~~2%~~ | — | Gone since 0.6.11: Pasiv's own build of the Pearl engine runs with its fee off, so nothing on the GPU lane goes to a third-party developer |
 | XMRig dev donation | 1% | The XMRig developers | Built into the mining engine Pasiv drives |
 
@@ -129,9 +161,9 @@ The fee is **time-sliced hashrate**, identical in mechanism to XMRig's dev fee
 
 - For **4% of active mining time**, the miner submits shares to **Pasiv's fee
   address** instead of the user's. The other 96% goes to the user's payout
-  address, untouched. On the unMineable route the fee address is Pasiv's
-  treasury, `bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90`, paid in BTC by the
-  same pool — publicly checkable at
+  address, untouched. The fee address is Pasiv's treasury,
+  `bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90`, paid in BTC by the same pool,
+  on the same algorithm the user mines — publicly checkable at
   <https://unmineable.com/address/bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90?coin=BTC> ([`FEE_ADDRESS_TREASURY`](../crates/pasiv-core/src/fee.rs)).
 - **The slice shape depends on how the miner can switch.** The CPU miner
   (XMRig) re-logs-in live, so its slice is 20 s in every 500 s. The GPU miner
@@ -159,11 +191,11 @@ The fee is **time-sliced hashrate**, identical in mechanism to XMRig's dev fee
 - **A friend's slices** (Share & earn) are the last 1 or 2 of every group of
   4 fee slices — counted over the life of the install, persisted on disk, so
   a machine that mines in short sessions still hands its friend exactly their
-  share over time (2026-09-28). The friend's login is used only on the
-  unMineable route; direct-route and `pasivd` slices all go to the treasury.
+  share over time (2026-09-28). `pasivd` has no Share & earn; all its slices
+  go to the treasury.
 
 **Where to read it:**
-- The schedule, the compile-time **fee addresses**, and the ledger format:
+- The schedule, the compile-time **fee address**, and the ledger format:
   [`crates/pasiv-core/src/fee.rs`](../crates/pasiv-core/src/fee.rs). Changing
   the address or the percentage requires a new signed release plus a changelog
   entry (never-list §3).
@@ -199,13 +231,13 @@ folder, and in `pasivd`'s state directory on a headless node. Beside it:
   ledger — the number of slices and the total fee time. `pasivd doctor`
   reports the same ledger on a headless node.
 - **The exact fee address**, a compile-time constant in
-  [`fee.rs`](../crates/pasiv-core/src/fee.rs) — the BTC treasury on the USDT
-  route, the Monero address on the direct route (where Monero is the only
-  coin with a Pasiv fee) — so anyone can confirm on the mining pool that the
-  numbers match: the treasury's public page on unMineable (linked in §2), or
-  the Monero fee address on MoneroOcean, linked from pasiv.network. (Monero
-  is a private chain: a block explorer shows nothing for any address, so
-  verification is pool-side, not on-chain.)
+  [`fee.rs`](../crates/pasiv-core/src/fee.rs) — the BTC treasury — so anyone
+  can confirm on the mining pool that the numbers match: the treasury's
+  public page on unMineable (linked in §2). Ledger lines written before 0.7.0
+  by the retired direct route name the old Monero fee address instead; they
+  still count and display, and MoneroOcean's page for that address is the
+  record of what they paid. (Monero is a private chain: a block explorer
+  shows nothing for any address, so verification is pool-side, not on-chain.)
 
 Fairness is not a claim here; it's a receipt.
 

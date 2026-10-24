@@ -10,14 +10,14 @@ and pinned by tests:
 
 | What | Where | Why it's here |
 |---|---|---|
-| The 4% fee engine | [`crates/pasiv-core/src/fee.rs`](crates/pasiv-core/src/fee.rs) | The compile-time fee addresses (the treasury for the USDT route, the XMR address for the direct route), the structural time-slice schedules (20 s in 500 s for a live-switching miner, 10 min in 4 h 10 min for one that must restart — exactly 4% either way, only in the `Mining` state), and the append-only ledger every slice is written to |
-| The USDT payout route | [`crates/pasiv-core/src/unmineable.rs`](crates/pasiv-core/src/unmineable.rs) | The default from 0.5.0: the unMineable login (`USDT:<your address>.<worker>#<referral>`), the BSC/TRON address rules (TRON checksum verified), and the pool hosts — the pool pays *your* address; Pasiv never holds funds |
-| The coin/pool roster | [`crates/pasiv-core/src/coins.rs`](crates/pasiv-core/src/coins.rs) | Exactly where hashes are submitted for every coin on the direct route — pools, ports, algorithms (Ravencoin and Ergo retired with Pasiv 0.6.11 on 2026-10-23; Zephyr, Salvium and Verus retire on 1 November 2026) |
+| The 4% fee engine | [`crates/pasiv-core/src/fee.rs`](crates/pasiv-core/src/fee.rs) | The compile-time fee address (the BTC treasury), the structural time-slice schedules (20 s in 500 s for a live-switching miner, 10 min in 4 h 10 min for one that must restart — exactly 4% either way, on every coin, only in the `Mining` state), and the append-only ledger every slice is written to |
+| The payout route | [`crates/pasiv-core/src/unmineable.rs`](crates/pasiv-core/src/unmineable.rs) | Pasiv's one route (the default from 0.5.0, the only one from 0.7.0): the unMineable login (`USDT:<your address>.<worker>#<referral>`, `BTC:…`, or natively `PRL:…` / `XMR:…` per lane), the address rules (checksums verified where the chain has one), and the pool hosts — the pool pays *your* address; Pasiv never holds funds |
+| The coin roster | [`crates/pasiv-core/src/coins.rs`](crates/pasiv-core/src/coins.rs) | Every coin Pasiv mines, the unMineable algorithm (and so the pool) it is mined under, and its native payout-address rule (Ravencoin and Ergo retired with Pasiv 0.6.11 on 2026-10-23; Zephyr, Salvium and Verus with 0.7.0, on the 1 November 2026 date, together with the legacy direct route) |
 | Payout validators | [`crates/pasiv-core/src/address.rs`](crates/pasiv-core/src/address.rs) | The paste-time rules for every payout address — USDT on BSC/TRON, and every coin's own |
 | The mining state machine | [`crates/pasiv-core/src/state.rs`](crates/pasiv-core/src/state.rs) | Drives both the UI and the fee counter — "never charge a paused user" is structural, not promised |
-| Auto/Max-Profit ranking math | [`crates/pasiv-core/src/profit.rs`](crates/pasiv-core/src/profit.rs) | Ranks coins on the user's **take-home** (net of the fee), never on gross — direct route only; the USDT route has one CPU coin |
+| Earnings-estimate math | [`crates/pasiv-core/src/profit.rs`](crates/pasiv-core/src/profit.rs) | Prices a coin on the user's **take-home** (net of the fee), never on gross |
 | The $/day formula | [`crates/pasiv-core/src/earnings.rs`](crates/pasiv-core/src/earnings.rs) | One function, every surface — desktop, daemon, phone totals |
-| **`pasivd`, the headless daemon** | [`pasivd/`](pasivd/) | A complete, runnable end-to-end money path: fetches and SHA-256-verifies the official XMRig, mines Monero on the CPU paid to *your* address — in USDT via unMineable when your account has a USDT payout, otherwise in XMR direct — takes the same 4% slice to the same fee address as the desktop on that route, writes the same ledger, and stops mining rather than ever stick on the fee address |
+| **`pasivd`, the headless daemon** | [`pasivd/`](pasivd/) | A complete, runnable end-to-end money path: fetches and SHA-256-verifies the official XMRig, mines Monero on the CPU on unMineable paid to *your* address — in USDT or BTC when your account has one, otherwise natively in XMR — takes the same 4% slice to the same treasury as the desktop, writes the same ledger, and stops mining rather than ever stick on the fee address |
 
 The binding product commitments — including the never-list — are in
 [`docs/FEES.md`](docs/FEES.md).
@@ -33,14 +33,12 @@ where hashes go, what the fee is, how it's charged, and how it's recorded.
 ## How to verify the claims
 
 - **Build the daemon yourself:** `cd pasivd && cargo build --release`. It runs
-  against the same cloud and pools the shipped binary does — and both the API
-  endpoint and the direct-route pool are overridable by environment
-  (`PASIVD_API_URL`, `PASIVD_ANON_KEY`, `PASIVD_POOL`), so nothing forces a
-  fork through Pasiv's backend.
+  against the same cloud and pool the shipped binary does — and the API
+  endpoint is overridable by environment (`PASIVD_API_URL`,
+  `PASIVD_ANON_KEY`), so nothing forces a fork through Pasiv's backend.
 - **Read the fee engine** and check the shipped behaviour against it: the
-  fee addresses are the two constants in `fee.rs` (the BTC treasury on the
-  USDT route, the Monero address on the direct route), and your local
-  `fee-ledger.jsonl` uses the format in the same file.
+  fee address is the one constant in `fee.rs` (the BTC treasury), and your
+  local `fee-ledger.jsonl` uses the format in the same file.
 - **Run the tests:** `cargo test --workspace`. The slice schedule, the 4%
   ratio, the ledger format, the address rules, and the ranking math are all
   pinned.
