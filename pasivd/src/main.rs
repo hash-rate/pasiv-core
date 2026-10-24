@@ -5,17 +5,17 @@
 //! commands and zero UI. A daemon can't do SIWE, so it pairs like a TV app:
 //!
 //!   pasivd claim   → prints a 6-char code; approve it in the Pasiv companion
-//!   pasivd run     → mines Monero (CPU) paid to YOUR address — in USDT or BTC
-//!                    via unMineable when the account has one, else in
-//!                    XMR direct — publishes state to the fleet, obeys
-//!                    start/stop from the phone
+//!   pasivd run     → mines Monero (CPU) on unMineable, paid to YOUR address —
+//!                    in USDT or BTC when the account has one, else natively
+//!                    in XMR to the account's Monero address — publishes
+//!                    state to the fleet, obeys start/stop from the phone
 //!
 //! Trust model mirrors the desktop (docs/FEES.md — the never-list):
 //!   - non-custodial: mines straight to the owner's payout address
 //!   - fee parity: the same time-sliced 4% (20 s per 500 s of Mining), to the
-//!     same compile-time fee address as the desktop on the same route (the
-//!     BTC treasury on unMineable, the Monero address direct), via the same
-//!     xmrig config hot-reload
+//!     same compile-time fee address as the desktop (the BTC treasury on
+//!     unMineable — one route since 0.7.0), via the same xmrig config
+//!     hot-reload
 //!   - remote actions are start, stop and update, and an update installs only
 //!     a release Pasiv signed (docs/FEES.md never-list item 8; see update.rs)
 //!   - the miner binary is fetched from xmrig's official release and
@@ -159,12 +159,23 @@ pub(crate) fn passwd_ids(passwd: &str, user: &str) -> Option<(u32, u32)> {
 /// root's, written at claim time). This is what lets a node keep mining when
 /// the cloud is down or the device was revoked: the address is the owner's
 /// own, heard from their account, and mining to it costs nobody anything.
+///
+/// One route (0.7.0, pasivd 0.1.12): the three columns the account carries.
+/// `payout_usdt` is the account-wide USDT/BTC address; `payout_xmr` and
+/// `payout_prl` are the NATIVE per-lane addresses the desktop's "Advanced:
+/// native coins" writes. A daemon mines RandomX only, so `payout_prl` (the
+/// GPU lane's Pearl address) is carried but never used here — it is kept so
+/// the cache mirrors the reply byte for byte (a changed column the daemon
+/// ignored would otherwise re-save every poll) and so `pasivd doctor` can
+/// show what the account holds. `target` says which of the other two pays.
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
 pub(crate) struct PayoutCache {
     #[serde(default)]
     payout_xmr: Option<String>,
     #[serde(default)]
     payout_usdt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    payout_prl: Option<String>,
 }
 
 pub(crate) fn payout_cache_path() -> PathBuf {
@@ -193,6 +204,7 @@ pub(crate) fn cached_payout(cfg: &DeviceConfig) -> PayoutCache {
     read_payout_cache().unwrap_or_else(|| PayoutCache {
         payout_xmr: cfg.payout_xmr.clone(),
         payout_usdt: cfg.payout_usdt.clone(),
+        payout_prl: cfg.payout_prl.clone(),
     })
 }
 
@@ -256,6 +268,11 @@ pub(crate) struct DeviceConfig {
     /// desktop app. Preferred over payout_xmr — see `target`.
     #[serde(default)]
     payout_usdt: Option<String>,
+    /// The owner's Pearl address — the GPU lane's NATIVE payout (0.7.0).
+    /// A daemon has no GPU lane, so this is never a login here; it is kept
+    /// so the claim-time config mirrors the account (see `PayoutCache`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    payout_prl: Option<String>,
     /// Crash reports (`crate::sentry`): `false` turns them off. On by
     /// default, disclosed in the README, and `PASIVD_TELEMETRY=0` overrides.
     #[serde(default = "default_true")]
@@ -297,6 +314,20 @@ impl MiningTarget {
 /// payout: `XMR:<addr>.<host>#<referral>` on the same pool (`native_for`).
 /// Until 0.7.0 that address meant the retired direct route to a Monero pool;
 /// the same address now keeps earning on unMineable, paid in XMR.
+///
+/// Per lane, like the desktop's `lane_login` — and a daemon has ONE lane,
+/// RandomX, so the account's Pearl address (`payout_prl`, the GPU lane's
+/// native payout) plays no part here. Why the account-wide address wins over
+/// the Monero one, unlike the desktop where a native address wins for its
+/// lane: `profiles.payout_xmr` was written by pre-0.5.0 desktops for the
+/// direct route and is NOT backfilled (migration 20261024000000), so a row
+/// can hold a stale Monero address beside the USDT/BTC address the owner
+/// chose later — possibly one they no longer control. The desktop's own
+/// migration drops exactly those stale entries on the rig; the cloud cannot
+/// tell them from a deliberate native choice, so the daemon applies the same
+/// rule: what the owner chose last (USDT/BTC) pays, and the Monero address
+/// pays only an account that has nothing else. Never-list §5.2, fail safe
+/// toward the owner's payout.
 ///
 /// The account field is still called `payout_usdt` (renaming it would strand
 /// every older node); it holds whichever unMineable asset the owner chose.
@@ -426,12 +457,14 @@ async fn cmd_claim() -> Result<(), String> {
         if v["status"] == "claimed" {
             let payout = v["payout_xmr"].as_str().map(|s| s.to_string());
             let payout_usdt = v["payout_usdt"].as_str().map(|s| s.to_string());
+            let payout_prl = v["payout_prl"].as_str().map(|s| s.to_string());
             let path = config_path();
             let cfg = DeviceConfig {
                 device_id,
                 secret,
                 payout_xmr: payout.clone(),
                 payout_usdt: payout_usdt.clone(),
+                payout_prl,
                 // A re-claim keeps the owner's crash-report choice.
                 telemetry: sentry::config_file_allows(&path),
             };
@@ -667,9 +700,12 @@ async fn poll_payout(client: &reqwest::Client, cfg: &DeviceConfig) -> Result<Pol
     Ok(Poll::Claimed(PayoutCache {
         payout_xmr: v["payout_xmr"].as_str().map(str::to_string),
         payout_usdt: v["payout_usdt"].as_str().map(str::to_string),
+        payout_prl: v["payout_prl"].as_str().map(str::to_string),
     }))
 }
 
+/// The daemon's one lane is RandomX: `payout_prl` is deliberately not passed
+/// (see `target`); it rides in the cache only.
 fn target_for(payout: &PayoutCache, host: &str, fee_worker: &str) -> Option<MiningTarget> {
     target(
         payout.payout_usdt.as_deref(),
@@ -1555,6 +1591,7 @@ mod tests {
             secret: "s3cret".into(),
             payout_xmr: Some("4addr".into()),
             payout_usdt: None,
+            payout_prl: None,
             telemetry: false,
         };
         write_config(&tmp, &cfg).unwrap();
@@ -1670,6 +1707,7 @@ mod tests {
             secret: "s".into(),
             payout_xmr: Some("4claim".into()),
             payout_usdt: None,
+            payout_prl: None,
             telemetry: true,
         };
         // No cache on disk in this test's data dir → the config's payout.
@@ -1682,6 +1720,48 @@ mod tests {
         let c: PayoutCache = serde_json::from_str(r#"{"payout_usdt":"0xabc"}"#).unwrap();
         assert_eq!(c.payout_usdt.as_deref(), Some("0xabc"));
         assert!(c.payout_xmr.is_none());
+        assert!(c.payout_prl.is_none());
+    }
+
+    /// pasivd 0.1.12 (one route): the account's Pearl address rides in the
+    /// cache — so a reply that only changed it is not re-saved every poll,
+    /// and a cache file from 0.1.11 (no key) still loads — but it is never a
+    /// login: the daemon's one lane is RandomX, and `target_for` hands
+    /// `target` only the USDT/BTC and Monero addresses.
+    #[test]
+    fn the_pearl_address_is_cached_but_never_mined_to_by_a_daemon() {
+        const PRL: &str = "prl1p7avmp9fu3gfkx64629q050q9d9snvwd07avmp9fu3gfkx64629q050q9d9";
+        let xmr = format!("4{}", "A".repeat(94));
+        let both = PayoutCache {
+            payout_xmr: Some(xmr.clone()),
+            payout_usdt: None,
+            payout_prl: Some(PRL.into()),
+        };
+        // Round-trips, and a reply with the key compares equal to the cache
+        // (that equality is what gates `save_payout_cache`).
+        let back: PayoutCache =
+            serde_json::from_str(&serde_json::to_string(&both).unwrap()).unwrap();
+        // (`assert!`, not `assert_eq!`: the cache deliberately has no Debug,
+        // so an address can never be printed by accident.)
+        assert!(back == both);
+        assert_eq!(back.payout_prl.as_deref(), Some(PRL));
+        // A 0.1.11 cache (no payout_prl) loads with it absent, and an absent
+        // key is not written back (older daemons that share the file never
+        // see a key they don't know).
+        let old: PayoutCache = serde_json::from_str(r#"{"payout_xmr":"4old"}"#).unwrap();
+        assert!(old.payout_prl.is_none());
+        assert!(!serde_json::to_string(&old).unwrap().contains("payout_prl"));
+        // The login is the Monero one; PRL appears nowhere in the target.
+        let t = target_for(&both, "rack", "pasiv-0123456789ab").unwrap();
+        assert!(t.user.starts_with(&format!("XMR:{xmr}.rack")), "{}", t.user);
+        assert!(!t.user.contains("prl1") && !t.fee.contains("prl1"));
+        // A Pearl address ALONE is no payout for a daemon: nothing mines.
+        let prl_only = PayoutCache {
+            payout_xmr: None,
+            payout_usdt: None,
+            payout_prl: Some(PRL.into()),
+        };
+        assert!(target_for(&prl_only, "rack", "w").is_none());
     }
 
     /// A config written before payouts existed has no `payout_xmr` key at all;
