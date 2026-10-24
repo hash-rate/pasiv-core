@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Auto / Max-Profit ranking math — the pure half of the desktop's profit
-//! module. The live fetchers (CoinGecko prices, pool network stats) live with
-//! each runner; everything here is a deterministic function of their inputs,
-//! which is exactly the part worth auditing: *how* Pasiv ranks coins, and that
-//! it ranks on the user's take-home, never on gross.
+//! Earnings-estimate math — the pure half of the desktop's profit module (it
+//! was the Auto / Max-Profit ranking while the RandomX family had three
+//! members; Auto retired with the direct route in 0.7.0, the maths stayed).
+//! The live fetchers (CoinGecko prices, pool network stats) live with each
+//! runner; everything here is a deterministic function of their inputs,
+//! which is exactly the part worth auditing: *how* Pasiv prices a coin, and
+//! that it shows the user's take-home, never gross.
 //!
-//! Every auto-rankable coin shares one algorithm (RandomX rx/0), so for a
-//! fixed hashrate the ranking reduces to `price × block_reward ÷
-//! network_difficulty` (block time cancels out). Coins on other PoWs (Verus,
-//! Pearl — and Ravencoin/Ergo until they retired in 0.6.11) are priced by
-//! their share of that coin's own network instead, and are never
-//! auto-switched against the RandomX family.
+//! A RandomX coin is priced as `price × block_reward ÷ network_difficulty`
+//! per unit hashrate (block time cancels out). Coins on other PoWs (Pearl;
+//! Verus, Ravencoin and Ergo before they retired) are priced by their share
+//! of that coin's own network instead.
 
 use serde::Serialize;
 
@@ -21,36 +21,14 @@ use crate::types::Coin;
 /// miner: cold RandomX dataset, ~30–60 s at 0 H/s).
 pub const SWITCH_MARGIN: f64 = 1.08;
 
-/// The Verus mainnet block interval. Fixed by consensus.
-pub const VERUS_BLOCK_SECS: f64 = 60.0;
-
-/// Ravencoin's block reward in RVN (coin retired in 0.6.11; the constant stays
-/// for the share-of-network tests). Fixed by consensus between halvings: 5000
-/// at launch → 2500 (Jan 2022) → **1250 (the Jan 2026 halving, in effect)**.
-/// The next halving is ~2030, so a constant is honest until then; if RVN's
-/// live estimate is ever off by a clean 2×, this is the first thing to check.
-pub const RVN_BLOCK_REWARD: f64 = 1250.0;
-
-/// Ravencoin's target block time (seconds) — 1 minute, a consensus constant.
-pub const RVN_BLOCK_SECS: f64 = 60.0;
-
-/// Ergo's block reward in ERG — 3 flat in the EIP-27 re-emission era (coin
-/// retired in 0.6.11; the constant stays for the share-of-network tests).
-/// Revisit only on an emission-schedule change.
-pub const ERG_BLOCK_REWARD: f64 = 3.0;
-
-/// Ergo's target block time (seconds) — 2 minutes, a consensus constant.
-pub const ERG_BLOCK_SECS: f64 = 120.0;
-
 /// A coin's live revenue estimate, for the UI's "what and why".
 #[derive(Debug, Clone, Serialize)]
 pub struct CoinScore {
     pub ticker: String,
-    /// USD/day at 1 kH/s, **net of Pasiv's own fee** — the user's take-home, so
-    /// the ranking Auto acts on and the ranking the UI shows are the same number
-    /// the user actually earns. Auto runs only on the direct route, where Pasiv's
-    /// fee is XMR-only, so this only differs from gross for XMR (see [`crate::fee::fee_fraction`]). Comparable across
-    /// coins on the same algorithm.
+    /// USD/day at 1 kH/s, **net of Pasiv's own fee** — the user's take-home,
+    /// so the number the UI shows is the number the user actually earns (4%
+    /// on every coin: [`crate::fee::fee_fraction`]). Comparable across coins
+    /// on the same algorithm.
     pub usd_per_day_kh: f64,
 }
 
@@ -65,17 +43,17 @@ pub fn score(price_usd: f64, reward_atomic: f64, coin_units: f64, difficulty: f6
 }
 
 /// A gross score reduced to the user's take-home for the given coin. This is
-/// the one line that makes the ranking honest: Auto must never prefer a coin
-/// because of revenue the user doesn't receive. Charged fee and ranked fee
-/// come from the same [`crate::fee::fee_fraction`], so they cannot disagree.
+/// the one line that makes the estimate honest: it must never show revenue
+/// the user doesn't receive. Charged fee and estimated fee come from the same
+/// [`crate::fee::fee_fraction`], so they cannot disagree.
 pub fn net_score(gross: f64, coin: Coin) -> f64 {
     gross * (1.0 - crate::fee::fee_fraction(coin))
 }
 
 /// USD/day at 1 kH/s for a coin priced by its **share of network hashrate** —
-/// the model for coins that can't be RandomX-ranked because they run a
-/// different PoW (Verus/VerusHash, Pearl/pearlhash; Ravencoin/KawPow and
-/// Ergo/Autolykos2 until 0.6.11). Your share of the network at 1 kH/s is
+/// the model for coins that can't be RandomX-priced because they run a
+/// different PoW (Pearl/pearlhash today; Verus, Ravencoin and Ergo before
+/// they retired). Your share of the network at 1 kH/s is
 /// `1000 / network_hashps`, times blocks/day, times reward, times price.
 /// `None` if any input is non-positive, matching `score()`.
 pub fn share_of_network_score(
@@ -89,16 +67,6 @@ pub fn share_of_network_score(
     }
     let blocks_per_day = 86_400.0 / block_secs;
     Some((1_000.0 / network_hashps) * blocks_per_day * reward * price_usd)
-}
-
-/// Verus's earnings rate — the share-of-network model fed Verus's own numbers.
-pub fn verus_score(
-    price_usd: f64,
-    reward_vrsc: f64,
-    network_hashps: f64,
-    block_secs: f64,
-) -> Option<f64> {
-    share_of_network_score(price_usd, reward_vrsc, network_hashps, block_secs)
 }
 
 /// Pure switch decision. Given the ranked scores (desc), the tickers the user can
@@ -147,60 +115,34 @@ mod tests {
 
     #[test]
     fn net_score_subtracts_exactly_the_charged_fee() {
-        // XMR: take-home = gross × (1 − 4%); every fee-free coin passes through.
+        // Take-home = gross × (1 − 4%) on EVERY coin (one route, one rule).
         let gross = 100.0;
-        assert!((net_score(gross, Coin::Xmr) - 96.0).abs() < 1e-9);
-        for coin in [
-            Coin::Zeph,
-            Coin::Sal,
-            Coin::Vrsc,
-            Coin::Prl,
-            Coin::Rvn,
-            Coin::Erg,
-        ] {
-            assert_eq!(net_score(gross, coin), gross);
+        for coin in [Coin::Xmr, Coin::Prl] {
+            assert!((net_score(gross, coin) - 96.0).abs() < 1e-9, "{coin:?}");
         }
     }
 
-    #[test]
-    fn verus_score_reflects_share_of_network() {
-        // Live-ish figures (2026-07-26): $0.367 price, 3 VRSC miner reward,
-        // ~1.36 TH/s network, 60 s blocks → a Mac at 7.4 MH/s earns under a cent
-        // a day. This is the honest signal: Verus's big MH/s number is worth
-        // little against an FPGA-dominated network.
-        let rate = verus_score(0.367, 3.0, 1_360_910_012_433.0, 60.0).unwrap();
-        let per_day_at_7_4mh = (7_400_000.0 / 1000.0) * rate;
-        assert!(
-            per_day_at_7_4mh > 0.0 && per_day_at_7_4mh < 0.05,
-            "expected a few cents/day at most, got {per_day_at_7_4mh}"
-        );
-
-        // Monotonic the way you'd expect, and bad inputs drop out.
-        let base = verus_score(0.367, 3.0, 1e12, 60.0).unwrap();
-        assert!(verus_score(0.367, 3.0, 2e12, 60.0).unwrap() < base); // more network → less
-        assert!(verus_score(0.734, 3.0, 1e12, 60.0).unwrap() > base); // higher price → more
-        assert!(verus_score(0.0, 3.0, 1e12, 60.0).is_none());
-        assert!(verus_score(0.367, 3.0, 0.0, 60.0).is_none());
-    }
-
+    /// `choose` is pure ranking logic (hysteresis, "only what the user can be
+    /// paid in"); with one RandomX coin on the roster it is exercised on
+    /// synthetic tickers so the maths stays pinned.
     #[test]
     fn choose_picks_best_mineable_and_respects_hysteresis() {
-        let ranked = vec![cs("zeph", 100.0), cs("xmr", 96.0), cs("sal", 60.0)];
-        let all = vec!["xmr".to_string(), "zeph".into(), "sal".into()];
+        let ranked = vec![cs("a", 100.0), cs("xmr", 96.0), cs("b", 60.0)];
+        let all = vec!["xmr".to_string(), "a".into(), "b".into()];
 
         // From nothing (start-up): pick the outright best mineable coin.
-        assert_eq!(choose(&ranked, &all, "").as_deref(), Some("zeph"));
+        assert_eq!(choose(&ranked, &all, "").as_deref(), Some("a"));
 
         // Already on the best → stay put.
-        assert_eq!(choose(&ranked, &all, "zeph"), None);
+        assert_eq!(choose(&ranked, &all, "a"), None);
 
-        // On XMR (96) vs ZEPH (100): only ~4% better, under the 8% margin → stay.
+        // On XMR (96) vs A (100): only ~4% better, under the 8% margin → stay.
         assert_eq!(choose(&ranked, &all, "xmr"), None);
 
-        // On SAL (60) vs ZEPH (100): a clear win → switch.
-        assert_eq!(choose(&ranked, &all, "sal").as_deref(), Some("zeph"));
+        // On B (60) vs A (100): a clear win → switch.
+        assert_eq!(choose(&ranked, &all, "b").as_deref(), Some("a"));
 
-        // Only XMR has a payout set → never leaves XMR even though ZEPH scores more.
+        // Only XMR has a payout set → never leaves XMR even though A scores more.
         let only_xmr = vec!["xmr".to_string()];
         assert_eq!(choose(&ranked, &only_xmr, "xmr"), None);
         // …and from start-up with only XMR mineable, it picks XMR.
@@ -231,63 +173,5 @@ mod tests {
         assert!(share_of_network_score(0.66, reward, 2.4e19, 252.0).unwrap() > base);
         assert!(share_of_network_score(0.0, reward, 2.4e19, 252.0).is_none());
         assert!(share_of_network_score(0.33, reward, 0.0, 252.0).is_none());
-    }
-
-    /// Locks the KawPow difficulty→hashrate conversion the runners rely on,
-    /// against a live cross-check taken 2026-08-17: HeroMiners difficulty
-    /// 10714.566 ↔ WhatToMine `nethash` 766,978,531,240 H/s (Ethash-family:
-    /// raw hashes/block = difficulty × 2^32).
-    #[test]
-    fn ravencoin_hashrate_from_difficulty_matches_reference() {
-        let difficulty = 10714.566_f64;
-        let hashps = difficulty * 4_294_967_296.0 / RVN_BLOCK_SECS;
-        let reference = 766_978_531_240.0;
-        assert!(
-            (hashps - reference).abs() / reference < 0.01,
-            "RVN hashrate {hashps} drifted from reference {reference}"
-        );
-    }
-
-    /// The RVN earnings model produces a plausible per-GPU number: at ~$0.0028/RVN,
-    /// ~767 GH/s network, 1250 reward, 60 s blocks, a 20 MH/s consumer GPU should
-    /// land in cents/day — not zero, not dollars. Guards a units slip.
-    #[test]
-    fn ravencoin_share_of_network_is_sane() {
-        let rate = share_of_network_score(0.0028, RVN_BLOCK_REWARD, 7.67e11, RVN_BLOCK_SECS)
-            .expect("finite inputs");
-        let gpu_day = rate * 20_000.0; // 20 MH/s = 20_000 kH/s
-        assert!(
-            (0.02..1.0).contains(&gpu_day),
-            "implausible RVN/day for a 20 MH/s GPU: ${gpu_day}"
-        );
-    }
-
-    /// Locks the Autolykos difficulty→hashrate conversion, against the live
-    /// cross-check taken 2026-08-17: HeroMiners difficulty 59,452,111,716,352 ↔
-    /// WhatToMine `nethash` 503,831,455,223 H/s. Note the convention differs
-    /// from KawPow's: NO 2^32 factor, plain difficulty / block_time.
-    #[test]
-    fn ergo_hashrate_from_difficulty_matches_reference() {
-        let difficulty = 59_452_111_716_352.0_f64;
-        let hashps = difficulty / ERG_BLOCK_SECS;
-        let reference = 503_831_455_223.0;
-        assert!(
-            (hashps - reference).abs() / reference < 0.02,
-            "ERG hashrate {hashps} drifted from reference {reference}"
-        );
-    }
-
-    /// The ERG earnings model produces a plausible per-GPU number: at ~$0.20/ERG,
-    /// ~500 GH/s network, 3 ERG reward, 120 s blocks, a 120 MH/s consumer GPU
-    /// should land around a dime/day — not zero, not dollars. Guards a units slip.
-    #[test]
-    fn ergo_share_of_network_is_sane() {
-        let rate = share_of_network_score(0.2027, ERG_BLOCK_REWARD, 5.04e11, ERG_BLOCK_SECS)
-            .expect("finite inputs");
-        let gpu_day = rate * 120_000.0; // 120 MH/s = 120_000 kH/s
-        assert!(
-            (0.03..0.5).contains(&gpu_day),
-            "implausible ERG/day for a 120 MH/s GPU: ${gpu_day}"
-        );
     }
 }

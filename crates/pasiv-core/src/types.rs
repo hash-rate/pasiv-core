@@ -17,7 +17,11 @@ pub enum MinerId {
     SrbMiner,
     /// Verus — the only IN-PROCESS miner: native arm64 VerusHash + a Rust
     /// stratum client, no vendored sidecar. It never spawns an OS process, so it
-    /// writes no pidfile and the reaper never touches it.
+    /// writes no pidfile and the reaper never touches it. RETIRED in 0.7.0
+    /// (2026-10-24, the 1 November 2026 date): it only ever mined on the
+    /// legacy direct route; no roster row names it and `is_available` is
+    /// false. The engine module (`verus`) stays as the documented reference
+    /// implementation.
     Verus,
     /// The Pearl engine Pasiv builds from source and signs itself (CPPminer,
     /// MIT) — the GPU lane's engine since 0.6.11 (2026-10-23), replacing
@@ -68,14 +72,18 @@ impl MinerId {
 #[serde(rename_all = "snake_case")]
 pub enum Coin {
     Xmr,
-    /// Zephyr — RandomX (rx/0), mined via XMRig on the XMRig-family path.
+    /// Zephyr — RETIRED in 0.7.0 (2026-10-24, the 1 November 2026 date set in
+    /// 0.5.0). Was RandomX (rx/0) via XMRig on the legacy direct route, which
+    /// is gone. The variant stays so a config that still names it
+    /// deserialises; `coins::spec` maps it to the Monero row and the desktop
+    /// switches such a rig to Monero on load.
     Zeph,
-    /// Salvium — RandomX (rx/0), mined via XMRig; post-fork Carrot ("SC1…")
-    /// payout addresses. Same XMRig-family path as XMR/ZEPH.
+    /// Salvium — RETIRED in 0.7.0, same story as Zephyr. Was RandomX (rx/0)
+    /// via XMRig with post-fork Carrot ("SC1…") payout addresses.
     Sal,
-    /// Verus — VerusHash V2.2 (AES-accelerated; the coin Apple Silicon is
-    /// genuinely great at). Mined in-process (not XMRig-family) via the
-    /// `verus` adapter. Address is 'R'-prefixed base58check.
+    /// Verus — RETIRED in 0.7.0, same story. Was VerusHash V2.2, mined
+    /// in-process via the `verus` adapter on macOS; 'R'-prefixed base58check
+    /// addresses.
     Vrsc,
     Prl,
     /// Ravencoin — RETIRED in 0.6.11 (2026-10-23) with SRBMiner-Multi, the
