@@ -96,7 +96,8 @@ pub async fn cmd_doctor() -> Result<(), String> {
 
     // payout: the address every share pays to — the one the node would start
     // on with the cloud down (the state-dir cache, else the claim-time
-    // config). USDT (unMineable) wins over XMR, exactly as `target` chooses.
+    // config). The account-wide USDT/BTC address wins over a native XMR one,
+    // exactly as `target` chooses; both are paid by unMineable.
     let payout = cfg.as_ref().map(crate::cached_payout);
     let usdt = payout.as_ref().and_then(|p| p.payout_usdt.as_deref());
     let xmr = payout.as_ref().and_then(|p| p.payout_xmr.as_deref());
@@ -118,9 +119,11 @@ pub async fn cmd_doctor() -> Result<(), String> {
             "payout",
             "saved unMineable payout address (USDT or BTC) is not valid".into(),
         ),
-        (None, Some(a)) if is_valid_xmr_address(a) => {
-            report("PASS", "payout", "XMR address shape ok".into())
-        }
+        (None, Some(a)) if is_valid_xmr_address(a) => report(
+            "PASS",
+            "payout",
+            "XMR address shape ok (paid natively in XMR via unMineable)".into(),
+        ),
         (None, Some(_)) => report(
             "FAIL",
             "payout",

@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use pasiv_core::address::is_valid_xmr_address;
-use pasiv_core::fee::{self, PayoutSide, SliceScheduler, SwapFailure, FEE_ADDRESS_XMR};
+use pasiv_core::fee::{self, PayoutSide, SliceScheduler, SwapFailure};
 use serde::{Deserialize, Serialize};
 mod doctor;
 mod scrub;
@@ -200,12 +200,13 @@ pub(crate) fn cached_payout(cfg: &DeviceConfig) -> PayoutCache {
 // or an auditor — can point the daemon anywhere without patching source:
 //   PASIVD_API_URL   the device API endpoint
 //   PASIVD_ANON_KEY  the publishable key for it (RLS/edge auth do the enforcing)
-//   PASIVD_POOL      the direct-route stratum host:port (the unMineable route
-//                    always uses unMineable's RandomX host)
+// The pool is not overridable: every node mines on unMineable's RandomX host
+// (pasiv-core `unmineable::Algo`), the one payout route since 0.7.0. (The
+// `PASIVD_POOL` override pointed the retired direct route at another Monero
+// pool; it is ignored now.)
 const DEFAULT_FN_URL: &str = "https://vmmiuftvngxgwimwlrke.supabase.co/functions/v1/pasivd";
 // Publishable key — same one the apps ship; safe to publish, useless without RLS consent.
 const DEFAULT_ANON_KEY: &str = "sb_publishable_lp01D57d8gnuW49kelunDg_6c_ld5Lb";
-const DEFAULT_POOL: &str = "gulf.moneroocean.stream:10128";
 
 pub(crate) fn fn_url() -> String {
     std::env::var("PASIVD_API_URL").unwrap_or_else(|_| DEFAULT_FN_URL.into())
@@ -213,8 +214,10 @@ pub(crate) fn fn_url() -> String {
 pub(crate) fn anon_key() -> String {
     std::env::var("PASIVD_ANON_KEY").unwrap_or_else(|_| DEFAULT_ANON_KEY.into())
 }
+/// unMineable's RandomX stratum, `host:port` — where every node's hashes go.
 pub(crate) fn pool() -> String {
-    std::env::var("PASIVD_POOL").unwrap_or_else(|_| DEFAULT_POOL.into())
+    use pasiv_core::unmineable::Algo;
+    format!("{}:{}", Algo::RandomX.host(), Algo::PORT)
 }
 pub(crate) const XMRIG_URL: &str =
     "https://github.com/xmrig/xmrig/releases/download/v6.26.0/xmrig-6.26.0-linux-static-x64.tar.gz";
@@ -243,11 +246,14 @@ pub(crate) const VERSION: &str = concat!("pasivd ", env!("CARGO_PKG_VERSION"));
 pub(crate) struct DeviceConfig {
     device_id: String,
     secret: String,
+    /// The owner's Monero address: since 0.7.0 a NATIVE payout on unMineable
+    /// (paid in XMR), used when the account has no USDT/BTC address — see
+    /// `target`. Until then it meant the retired direct route.
     #[serde(default)]
     payout_xmr: Option<String>,
-    /// unMineable payout (USDT, or BTC from 0.1.10 — asset by address shape)
-    /// from the owner's account, when they chose it in the desktop app.
-    /// Preferred over payout_xmr — see `target`.
+    /// unMineable account-wide payout (USDT, or BTC from 0.1.10 — asset by
+    /// address shape) from the owner's account, when they chose it in the
+    /// desktop app. Preferred over payout_xmr — see `target`.
     #[serde(default)]
     payout_usdt: Option<String>,
     /// Crash reports (`crate::sentry`): `false` turns them off. On by
@@ -264,66 +270,68 @@ fn default_true() -> bool {
 #[derive(Debug, PartialEq)]
 pub(crate) struct MiningTarget {
     pub pool: String,
-    /// The owner's login: `USDT:<addr>.<host>#<referral>` (or `BTC:…`) on unMineable, or
-    /// the bare XMR address on the direct pool.
+    /// The owner's login: `USDT:<addr>.<host>#<referral>` (or `BTC:…`, or a
+    /// native `XMR:<addr>…`) on unMineable.
     pub user: String,
-    /// The fee slice's login: the treasury on unMineable, FEE_ADDRESS_XMR direct.
+    /// The fee slice's login: the treasury on unMineable.
     pub fee: String,
-    /// On the unMineable route — decides what the fee ledger records.
-    pub unmineable: bool,
+    /// The owner is paid account-wide (USDT/BTC), as opposed to natively in
+    /// XMR. Decides whether the cloud link switches auto-pay on for the
+    /// account address.
+    pub account_asset: bool,
 }
 
 impl MiningTarget {
     /// A fresh fee scheduler whose ledger records where this node's slices
-    /// really go (the treasury on unMineable, the XMR fee address direct).
+    /// really go: Monero mined, paid to the treasury.
     fn scheduler(&self) -> SliceScheduler {
-        if self.unmineable {
-            SliceScheduler::for_unmineable(pasiv_core::types::Coin::Xmr)
-        } else {
-            SliceScheduler::new()
-        }
+        SliceScheduler::for_unmineable(pasiv_core::types::Coin::Xmr)
     }
 }
 
-/// The route rule, pure so it is tested: a valid unMineable payout address on
-/// the account — USDT (BSC/TRON) or, from 0.1.10, BTC — means the owner chose
-/// unMineable (the desktop publishes it only then); the asset is read from the
-/// address's shape (`PayoutAsset::infer`, shapes cannot collide). Otherwise the
-/// direct Monero pool with the XMR address, exactly as before.
+/// The payout rule, pure so it is tested. One route (0.7.0): the node mines
+/// RandomX on unMineable, and the LOGIN picks what the owner is paid in. A
+/// valid account-wide address — USDT (BSC/TRON) or, from 0.1.10, BTC; the
+/// asset is read from the address's shape (`PayoutAsset::infer`, shapes
+/// cannot collide) — wins. Otherwise the owner's Monero address is a NATIVE
+/// payout: `XMR:<addr>.<host>#<referral>` on the same pool (`native_for`).
+/// Until 0.7.0 that address meant the retired direct route to a Monero pool;
+/// the same address now keeps earning on unMineable, paid in XMR.
 ///
 /// The account field is still called `payout_usdt` (renaming it would strand
-/// every older node); it holds whichever unMineable asset the owner chose. A
-/// node older than 0.1.10 reads a BTC address there as invalid and keeps its
-/// direct-XMR route (still the owner's own address) until it self-updates.
+/// every older node); it holds whichever unMineable asset the owner chose.
 pub(crate) fn target(
     usdt: Option<&str>,
     xmr: Option<&str>,
     host: &str,
     fee_worker: &str,
 ) -> Option<MiningTarget> {
-    use pasiv_core::unmineable::{login, Algo, PayoutAsset};
+    use pasiv_core::types::Coin;
+    use pasiv_core::unmineable::{login, PayoutAsset};
+    // The treasury's pool page is public and lists workers by name: a fee
+    // slice logs in as an opaque token, never the node's hostname
+    // (`fee_worker_name`).
+    let fee_login = fee::unmineable_fee_login(fee_worker);
     if let Some(addr) = usdt.map(str::trim) {
         if let Some(asset) = PayoutAsset::infer(addr) {
             if let Some(user) = login(asset, addr, host, fee::UNMINEABLE_REFERRAL) {
                 return Some(MiningTarget {
-                    pool: format!("{}:{}", Algo::RandomX.host(), Algo::PORT),
+                    pool: pool(),
                     user,
-                    // The treasury's pool page is public and lists workers by
-                    // name: a fee slice logs in as an opaque token, never the
-                    // node's hostname (`fee_worker_name`).
-                    fee: fee::unmineable_fee_login(fee_worker),
-                    unmineable: true,
+                    fee: fee_login,
+                    account_asset: true,
                 });
             }
         }
     }
-    xmr.filter(|a| is_valid_xmr_address(a))
-        .map(|a| MiningTarget {
-            pool: pool(),
-            user: a.to_string(),
-            fee: FEE_ADDRESS_XMR.to_string(),
-            unmineable: false,
-        })
+    let native = PayoutAsset::native_for(Coin::Xmr)?;
+    let xmr = xmr.map(str::trim).filter(|a| is_valid_xmr_address(a))?;
+    login(native, xmr, host, fee::UNMINEABLE_REFERRAL).map(|user| MiningTarget {
+        pool: pool(),
+        user,
+        fee: fee_login,
+        account_asset: false,
+    })
 }
 
 pub(crate) fn config_path() -> PathBuf {
@@ -777,7 +785,7 @@ async fn cmd_run() -> Result<(), String> {
 
     let (mut tgt, mut payout, first_poll_in) =
         startup_target(&client, &cfg, &host, &fee_worker).await;
-    sentry::set_route(tgt.unmineable);
+    sentry::set_route();
 
     // The miner binary, fetched and pinned. A failure here is no longer
     // fatal: the loop below retries every ENSURE_RETRY, so a node installed
@@ -829,7 +837,10 @@ async fn cmd_run() -> Result<(), String> {
         cfg: cfg.clone(),
         host: host.clone(),
         hardware,
-        unmineable_usdt: tgt.unmineable.then(|| payout.payout_usdt.clone()).flatten(),
+        unmineable_usdt: tgt
+            .account_asset
+            .then(|| payout.payout_usdt.clone())
+            .flatten(),
         first_poll_in,
         report_rx,
         events_tx,
@@ -1004,7 +1015,11 @@ async fn cmd_run() -> Result<(), String> {
             // Now: every tick, ask xmrig where it is actually mining and
             // correct it. "Where" means EVERY pool entry (all_pools_use), so a
             // backup pool xmrig failed over to can't hide a wrong login.
-            let want = sched.desired(last_hashrate > 0.0, mining_secs);
+            let want = sched.desired_for(
+                pasiv_core::fee::SwitchKind::HotSwap,
+                last_hashrate > 0.0,
+                mining_secs,
+            );
             let target = side_address(want, &tgt);
             match xmrig_pools_on(&client, &m.token, target).await {
                 Some(true) => {
@@ -1352,8 +1367,13 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pasiv_core::fee::{in_fee_slice, SLICE_SECS, SLICE_WINDOW_SECS};
+    use pasiv_core::fee::{in_fee_slice_for, SwitchKind, SLICE_SECS, SLICE_WINDOW_SECS};
+    use pasiv_core::fee::{FEE_ADDRESS_TREASURY, FEE_TREASURY_ASSET};
     use pasiv_core::types::Coin;
+
+    fn in_fee_slice(s: u64) -> bool {
+        in_fee_slice_for(SwitchKind::HotSwap, s)
+    }
 
     /// Env vars are process-global; every test that sets one — or reads a
     /// value derived from one, like `pool()` — takes this lock so parallel
@@ -1370,7 +1390,7 @@ mod tests {
             started_at: 1785797656,
             ended_at: 1785797676,
             coin: Coin::Xmr,
-            address: FEE_ADDRESS_XMR.into(),
+            address: FEE_ADDRESS_TREASURY.into(),
             est_hashes: 130651,
         })
         .unwrap();
@@ -1378,7 +1398,7 @@ mod tests {
             line,
             format!(
                 "{{\"started_at\":1785797656,\"ended_at\":1785797676,\"coin\":\"xmr\",\
-                 \"address\":\"{FEE_ADDRESS_XMR}\",\"est_hashes\":130651}}"
+                 \"address\":\"{FEE_ADDRESS_TREASURY}\",\"est_hashes\":130651}}"
             )
         );
     }
@@ -1396,7 +1416,7 @@ mod tests {
         // SAFETY: env mutation serialised by ENV_LOCK.
         unsafe { std::env::set_var("PASIVD_FEE_LEDGER", &tmp) };
 
-        let mut sched = SliceScheduler::new();
+        let mut sched = SliceScheduler::for_unmineable(Coin::Xmr);
         confirm_side(&mut sched, PayoutSide::Fee, 100.0); // rising edge — no line
         confirm_side(&mut sched, PayoutSide::Fee, 100.0); // hold — no line
         confirm_side(&mut sched, PayoutSide::User, 100.0); // falling edge — one line
@@ -1418,27 +1438,30 @@ mod tests {
     }
 
     /// THE parity invariant that actually protects money: a headless node must
-    /// take its 4% to the SAME address the desktop does. Both now read the one
-    /// compile-time constant in the shared pasiv-core crate, so drift is
+    /// take its 4% to the SAME address the desktop does. Both read the one
+    /// compile-time treasury in the shared pasiv-core crate, so drift is
     /// impossible by construction; this test pins the BEHAVIOUR — inside a fee
-    /// slice the login target is exactly that constant, outside it the user's
-    /// payout, and the constant itself is a mineable address.
+    /// slice the login target is the treasury's login, outside it the user's
+    /// payout, and the treasury itself is a mineable address.
     #[test]
     fn fee_target_is_the_shared_crate_address_inside_a_slice() {
-        let direct = MiningTarget {
-            pool: pool(),
-            user: "4user".into(),
-            fee: FEE_ADDRESS_XMR.into(),
-            unmineable: false,
-        };
+        let t = target(
+            None,
+            Some(&format!("4{}", "A".repeat(94))),
+            "rack",
+            "pasiv-0123456789ab",
+        )
+        .unwrap();
         assert_eq!(
-            side_address(PayoutSide::Fee, &direct),
-            pasiv_core::fee::FEE_ADDRESS_XMR
+            side_address(PayoutSide::Fee, &t),
+            format!("{FEE_TREASURY_ASSET}:{FEE_ADDRESS_TREASURY}.pasiv_0123456789ab")
         );
-        assert_eq!(side_address(PayoutSide::User, &direct), "4user");
+        assert!(side_address(PayoutSide::User, &t).starts_with("XMR:4AAAA"));
         // And the fee address must itself be a valid payout, or the node can't
         // even mine its own slice.
-        assert!(is_valid_xmr_address(FEE_ADDRESS_XMR));
+        assert!(pasiv_core::address::is_valid_btc_segwit_address(
+            FEE_ADDRESS_TREASURY
+        ));
     }
 
     /// Not just "20 of every 500" but WHICH 20 — the LAST, matching the
@@ -1461,7 +1484,10 @@ mod tests {
     /// that panic.
     #[test]
     fn payout_validator_accepts_real_addresses_and_rejects_junk() {
-        assert!(is_valid_xmr_address(FEE_ADDRESS_XMR)); // real standard (4…), 95, base58
+        // The Monero General Fund's published address: real standard (4…), 95, base58.
+        assert!(is_valid_xmr_address(
+            "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A"
+        ));
         let sub = format!("8{}", "1".repeat(94)); // subaddress prefix, 95, base58
         assert!(is_valid_xmr_address(&sub));
         assert!(!is_valid_xmr_address("")); // empty
@@ -1680,17 +1706,18 @@ mod tests {
         unsafe { std::env::remove_var("PASIVD_CONFIG") };
     }
 
-    /// The endpoint overrides exist so a fork or an auditor can point the
-    /// daemon anywhere; the defaults are the shipped product.
+    /// The API overrides exist so a fork or an auditor can point the daemon
+    /// at another backend; the defaults are the shipped product. The pool is
+    /// unMineable's RandomX host and is NOT overridable (one route since
+    /// 0.7.0 — the retired `PASIVD_POOL` is ignored).
     #[test]
-    fn endpoints_default_to_pasiv_and_honour_overrides() {
+    fn endpoints_default_to_pasiv_and_the_pool_is_unmineable() {
         let _g = ENV_LOCK.lock().unwrap();
         assert_eq!(fn_url(), DEFAULT_FN_URL);
-        assert_eq!(pool(), DEFAULT_POOL);
+        assert_eq!(pool(), "rx.unmineable.com:3333");
         unsafe { std::env::set_var("PASIVD_POOL", "example.org:3333") };
-        assert_eq!(pool(), "example.org:3333");
+        assert_eq!(pool(), "rx.unmineable.com:3333");
         unsafe { std::env::remove_var("PASIVD_POOL") };
-        assert_eq!(pool(), DEFAULT_POOL);
     }
 
     /// REGRESSION (0.1.2): a headless node showed as a bare "Mining" with no
@@ -1721,7 +1748,9 @@ mod tests {
 
 #[cfg(test)]
 mod hardware_uplink_tests {
-    use super::{fee_worker_name, pool, target, FEE_ADDRESS_XMR};
+    use super::{fee_worker_name, target};
+    /// The Monero General Fund's published address — a real, valid XMR payout.
+    const XMR: &str = "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A";
     /// pasivd sends `serde_json::to_value(hardware::detect())` in its rig row,
     /// and the mobile companion reads exactly these keys off it (see
     /// pasiv-mobile Rig.fromRow: cpu_model, cpu_cores, usable_threads). This is
@@ -1750,7 +1779,7 @@ mod hardware_uplink_tests {
     fn a_usdt_account_mines_on_unmineable_with_the_treasury_fee() {
         let t = target(
             Some("0x000000000000000000000000000000000000dEaD"),
-            Some(FEE_ADDRESS_XMR),
+            Some(XMR),
             "rack-1",
             "pasiv-0123456789ab",
         )
@@ -1773,31 +1802,27 @@ mod hardware_uplink_tests {
             "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
             "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
         ] {
-            let t = target(
-                Some(addr),
-                Some(FEE_ADDRESS_XMR),
-                "rack-1",
-                "pasiv-0123456789ab",
-            )
-            .unwrap();
+            let t = target(Some(addr), Some(XMR), "rack-1", "pasiv-0123456789ab").unwrap();
             assert_eq!(t.pool, "rx.unmineable.com:3333");
             assert_eq!(t.user, format!("BTC:{addr}.rack_1#drp0-8auk"));
-            assert!(t.unmineable);
+            assert!(t.account_asset);
             // The fee side is untouched by the owner's asset.
             assert_eq!(
                 t.fee,
                 "BTC:bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90.pasiv_0123456789ab"
             );
         }
-        // A BTC address with one character wrong never leaves the XMR route.
+        // A BTC address with one character wrong never becomes the login: the
+        // node falls back to its native XMR payout, never to a bad address.
         let t = target(
             Some("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb"),
-            Some(FEE_ADDRESS_XMR),
+            Some(XMR),
             "rack",
             "pasiv-0123456789ab",
         )
         .unwrap();
-        assert_eq!(t.pool, pool());
+        assert_eq!(t.user, format!("XMR:{XMR}.rack#drp0-8auk"));
+        assert!(!t.account_asset);
     }
 
     /// The fee worker is opaque: no hostname, no raw device id, stable.
@@ -1810,20 +1835,27 @@ mod hardware_uplink_tests {
         assert_ne!(w, fee_worker_name("other-device"));
     }
 
+    /// One route (0.7.0): a node with only a Monero address mines RandomX on
+    /// unMineable paid NATIVELY in XMR — the same address that used to mean
+    /// the retired direct route keeps earning, with the same treasury fee as
+    /// every other node. This is also the fix for "no payout on the account"
+    /// nodes that only ever had an XMR address.
     #[test]
-    fn no_usdt_keeps_the_direct_monero_pool() {
-        let t = target(None, Some(FEE_ADDRESS_XMR), "rack", "pasiv-0123456789ab").unwrap();
-        assert_eq!(t.pool, pool());
-        assert_eq!(t.fee, FEE_ADDRESS_XMR);
-        // An invalid USDT address never moves a node off its working route.
-        let t2 = target(
-            Some("0x12"),
-            Some(FEE_ADDRESS_XMR),
-            "rack",
-            "pasiv-0123456789ab",
-        )
-        .unwrap();
-        assert_eq!(t2.pool, pool());
+    fn an_xmr_only_account_mines_on_unmineable_paid_in_xmr() {
+        let t = target(None, Some(XMR), "rack", "pasiv-0123456789ab").unwrap();
+        assert_eq!(t.pool, "rx.unmineable.com:3333");
+        assert_eq!(t.user, format!("XMR:{XMR}.rack#drp0-8auk"));
+        assert_eq!(
+            t.fee,
+            "BTC:bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90.pasiv_0123456789ab"
+        );
+        assert!(!t.account_asset);
+        // An invalid USDT address never moves a node off its working payout.
+        let t2 = target(Some("0x12"), Some(XMR), "rack", "pasiv-0123456789ab").unwrap();
+        assert_eq!(t2.user, t.user);
+        // A bad Monero address (or none) is no payout at all: nothing mines.
+        assert!(target(None, Some("4short"), "rack", "pasiv-0123456789ab").is_none());
+        assert!(target(None, Some(&format!("4{}", "A".repeat(105))), "rack", "w").is_none());
         assert!(target(None, None, "rack", "pasiv-0123456789ab").is_none());
     }
 }

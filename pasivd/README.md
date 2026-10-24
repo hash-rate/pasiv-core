@@ -1,9 +1,10 @@
 # pasivd — the headless Pasiv node
 
 Turn a server, NAS, or lab box into a rig in your Pasiv fleet with two commands
-and no GUI. `pasivd` mines Monero on the CPU, paid to your own address — in
-USDT via unMineable when your account has a USDT payout (the default for new
-Pasiv installs), otherwise in XMR direct — and reports state to the fleet, so a
+and no GUI. `pasivd` mines Monero on the CPU on unMineable, paid to your own
+address — in USDT or BTC when your account has such an address (the default
+for Pasiv installs), otherwise natively in XMR to your Monero address (one
+route since 0.7.0) — and reports state to the fleet, so a
 screenless machine shows up in the phone companion alongside your desktops. It
 versions **independently** of the desktop app (currently `0.1.10`).
 
@@ -21,7 +22,7 @@ sudo systemctl enable --now pasivd                  # starts mining once a payou
 The installer drops a static musl binary at `/usr/local/bin/pasivd` and a
 hardened systemd unit (`Nice=19`, yields to real work). Nothing mines until you
 claim the node **and** a payout is set on your account (desktop app → Wallets:
-a USDT address, or a Monero address on the direct route; it syncs
+a USDT/BTC address, or a Monero address paid natively; it syncs
 automatically).
 
 ## Commands
@@ -53,9 +54,8 @@ exits `2` (usage) and a failure exits `1`, so a wrapper can tell them apart.
   off, so from 0.1.7 the node switches it on for your USDT address (checked
   daily; it's the same setting as the switch on your unmineable.com address page).
 - **Fee parity** — the same time-sliced 4% (20 s of every 500 s of mining), to the
-  same compile-time fee address as the desktop on that route (the BTC treasury
-  on unMineable, the Monero fee address direct). A headless node is not a
-  fee-free loophole.
+  same compile-time fee address as the desktop (the BTC treasury on
+  unMineable). A headless node is not a fee-free loophole.
 - **Remote actions are start, stop and update** — nothing from the phone can
   change the coin, pool, or payout, and an update installs only a release Pasiv
   signed. A stop survives restarts: a node you paused stays paused.
@@ -140,7 +140,8 @@ says so explicitly rather than implying a fix exists.
 
 If pasivd **panics**, it sends one crash report to Sentry (`src/sentry.rs`)
 before it exits: the panic message and `file:line`, a backtrace, the daemon
-version, and two tags — `os` and `payout_route` (`usdt`/`direct`). Nothing
+version, and two tags — `os` and `payout_route` (always `usdt` since 0.7.0:
+one route). Nothing
 else leaves: no payout address, no hostname, no account name, no IP, no
 session, no breadcrumbs. Every text field is scrubbed first (`src/scrub.rs`:
 coin addresses of every shape, home paths, e-mails, IPs, MACs, hostnames, and

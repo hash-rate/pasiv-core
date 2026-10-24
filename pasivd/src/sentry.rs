@@ -153,10 +153,10 @@ pub fn init() {
 }
 
 /// `usdt` (unMineable) or `direct`, once the mining target is known.
-pub fn set_route(unmineable: bool) {
-    sentry::configure_scope(|s| {
-        s.set_tag("payout_route", if unmineable { "usdt" } else { "direct" })
-    });
+/// One payout route since 0.7.0: the tag is kept (dashboards filter on it)
+/// and always reads `usdt` (= unMineable, whatever the node is paid in).
+pub fn set_route() {
+    sentry::configure_scope(|s| s.set_tag("payout_route", "usdt"));
 }
 
 /// Sentry's own hook captures the panic on a background transport; a panic
