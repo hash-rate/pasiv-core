@@ -4,14 +4,19 @@
 //! slice scheduler is driven by the same state machine the UI renders, making
 //! overcharge structurally impossible rather than promised.
 //!
-//! The fee addresses ship below as compile-time constants — the BTC treasury
-//! for the unMineable (USDT) route, the default from 0.5.0, and the Monero
-//! address for the direct route (never-list: changing either requires a new
-//! signed release and a changelog entry). The slice is 20 s in every 500 s for
-//! a miner that switches live (XMRig) and 10 min in every 4 h 10 min for one
-//! that must restart (the Pearl engine; SRBMiner before it) — 4% either way.
-//! Every completed slice is
-//! appended to a local, human-readable JSONL ledger.
+//! The fee address ships below as a compile-time constant — the BTC treasury
+//! on unMineable, Pasiv's one payout route (never-list: changing it requires a
+//! new signed release and a changelog entry). The 4% applies to every coin,
+//! whatever the user is paid in (USDT, BTC, or the coin itself). The slice is
+//! 20 s in every 500 s for a miner that switches live (XMRig) and 10 min in
+//! every 4 h 10 min for one that must restart (the Pearl engine; SRBMiner
+//! before it) — 4% either way. Every completed slice is appended to a local,
+//! human-readable JSONL ledger.
+//!
+//! History: until 0.7.0 (2026-10-24) a second, legacy "direct" route mined
+//! straight to coin pools with a Monero fee address and an XMR-only fee rule.
+//! That route, its address and its rule are retired; the ledger reader below
+//! still parses the lines it wrote.
 //!
 //! Fail-safe by design: a runner only diverts to the fee address during an
 //! actual `Mining` slice, restarts always respawn on the user's address, and a
@@ -23,21 +28,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::Coin;
 
-/// Compile-time fee address for the direct route (never-list: changing it
-/// requires a signed release and a changelog entry). Empty = direct-route fee
-/// engine off. The unMineable route pays `FEE_ADDRESS_TREASURY` instead.
-///
-/// Mainnet Monero standard address, set 2026-07-24 — the fee engine is ON in
-/// signed releases.
-///
-/// NOTE: `is_valid_xmr_address` checks prefix, length and alphabet — it does
-/// NOT verify the Keccak checksum Monero addresses carry (that needs a base58
-/// block decode plus keccak-256; see the module note in `address`). This
-/// constant was checked against a real wallet by hand; the test below only
-/// proves it is well-formed.
-pub const FEE_ADDRESS_XMR: &str =
-    "47jfXhesYLvN5M8Qzy5j7PCwd99kZKdwNKwxqonrdEDVVzopGUfNApn1NK98sPE7wgGzsEtvMYM1cZChVpDHasabFH1MZ1f";
-
 /// 20 s per ~8.3 minute window = 4% of Mining time — the live-switch (XMRig)
 /// slice; see `slice_shape` for the restart-based (GPU engine) one.
 pub const SLICE_WINDOW_SECS: u64 = 500;
@@ -47,19 +37,10 @@ pub const SLICE_SECS: u64 = 20;
 /// `pasivd`) so a rack of screenless machines audits the same way.
 pub const LEDGER_FILE: &str = "fee-ledger.jsonl";
 
+/// Whether the fee engine is on: a treasury address ships. (A build with an
+/// empty treasury would charge nothing — that is the fail-safe direction.)
 pub fn slices_enabled() -> bool {
-    !FEE_ADDRESS_XMR.is_empty()
-}
-
-/// Whether a given count of elapsed **Mining** seconds falls inside a fee slice.
-/// Over each `SLICE_WINDOW_SECS` window of Mining time, the first `SLICE_SECS`
-/// are the fee slice (mine to the fee address); the remainder go to the user.
-/// This is what makes the 4% *structural* — it's a pure function of time spent
-/// in the `Mining` state, so a paused/idle user is charged exactly zero, and it
-/// returns false entirely when no fee address ships. A runner consults this
-/// each tick to decide which address the miner points at.
-pub fn in_fee_slice(mining_secs: u64) -> bool {
-    slices_enabled() && slice_at_window_end(mining_secs, SLICE_WINDOW_SECS, SLICE_SECS)
+    !FEE_ADDRESS_TREASURY.is_empty()
 }
 
 /// The slice sits at the END of each window, never the start. Mining time
@@ -71,34 +52,28 @@ fn slice_at_window_end(mining_secs: u64, window: u64, slice: u64) -> bool {
     mining_secs % window >= window - slice
 }
 
-/// The fraction of gross revenue Pasiv's own fee takes for a given coin on the
-/// DIRECT route: the time-sliced 4% on XMR, and exactly zero on every other
-/// coin (the direct-route fee is XMR-only; on the unMineable route every coin
-/// pays 4% — see `fee_fraction_unmineable`). Mirrors the runners' `fee_applies` gate
-/// (`slices_enabled() && coin == Coin::Xmr`) so the number Auto ranks on can
-/// never disagree with what's actually charged. Auto uses this to rank on the
-/// user's *take-home* rather than gross — otherwise it would prefer XMR over a
-/// fee-free coin that pays the user more once the fee is counted.
+/// The fraction of gross revenue Pasiv's own fee takes for a coin: the
+/// time-sliced 4%, the same for EVERY coin on the one route (decided
+/// 2026-09-25 for unMineable, the only route since 0.7.0; until then the
+/// legacy direct route charged Monero only, which is why this takes a coin).
+/// It mirrors the runners' `fee_applies` gate so the number an earnings
+/// estimate nets out can never disagree with what is actually charged.
 pub fn fee_fraction(coin: Coin) -> f64 {
-    if slices_enabled() && coin == Coin::Xmr {
-        SLICE_SECS as f64 / SLICE_WINDOW_SECS as f64
-    } else {
-        0.0
-    }
+    let _ = coin; // every coin, by design — the parameter is the audit trail
+    fee_fraction_unmineable()
 }
 
-// ── unMineable route (the default from 0.5.0, decided 2026-09-25) ─────────
+// ── unMineable — the one route (default from 0.5.0, only route from 0.7.0) ─
 //
-// On the unMineable route the 4% applies to EVERY coin (decided 2026-09-25,
-// disclosed in docs/FEES.md): a fee slice mines to Pasiv's treasury instead of
-// the user's address, on the same pool and algorithm. The direct-pool route
-// above keeps its XMR-only rule for installs from before 0.5.0, until their
-// owner switches to USDT payouts; it is not offered to new installs.
+// The 4% applies to EVERY coin (decided 2026-09-25, disclosed in
+// docs/FEES.md): a fee slice mines to Pasiv's treasury instead of the user's
+// address, on the same pool and algorithm, whether the user is paid in USDT,
+// BTC or the coin itself.
 
 /// Pasiv's treasury — a Bitcoin SegWit address (bech32 checksum verified by
 /// the test below). unMineable converts the fee slices' hashrate and pays it
-/// in BTC. Compile-time constant for the same reason as `FEE_ADDRESS_XMR`:
-/// changing it takes a signed release and a changelog entry (never-list #3).
+/// in BTC. A compile-time constant: changing it takes a signed release and a
+/// changelog entry (never-list #3).
 pub const FEE_ADDRESS_TREASURY: &str = "bc1qv8nlkvhjelgp5d5lk79qjs6sdeq08w8vjxgz90";
 
 /// The asset the treasury is paid in on unMineable.
@@ -131,10 +106,17 @@ pub fn slice_shape(kind: SwitchKind) -> (u64, u64) {
     }
 }
 
-/// `in_fee_slice` for a given switch kind, on the unMineable route (all coins).
+/// Whether a given count of elapsed **Mining** seconds falls inside a fee
+/// slice, for a given switch kind (all coins). Over each window of Mining
+/// time the LAST `slice` seconds are the fee slice (mine to the treasury);
+/// the rest go to the user. This is what makes the 4% *structural* — a pure
+/// function of time spent in the `Mining` state, so a paused/idle user is
+/// charged exactly zero — and it returns false entirely when no treasury
+/// ships. A runner consults it each tick to decide which address the miner
+/// points at.
 pub fn in_fee_slice_for(kind: SwitchKind, mining_secs: u64) -> bool {
     let (window, slice) = slice_shape(kind);
-    !FEE_ADDRESS_TREASURY.is_empty() && slice_at_window_end(mining_secs, window, slice)
+    slices_enabled() && slice_at_window_end(mining_secs, window, slice)
 }
 
 /// The fee login on unMineable: the treasury, paid in BTC, with the worker
@@ -263,12 +245,13 @@ pub fn fee_login_for(
     }
 }
 
-/// Fee fraction on the unMineable route: 4% of every coin.
+/// Fee fraction on unMineable: 4% of every coin (zero only if no treasury
+/// shipped — then nothing is charged at all).
 pub fn fee_fraction_unmineable() -> f64 {
-    if FEE_ADDRESS_TREASURY.is_empty() {
-        0.0
-    } else {
+    if slices_enabled() {
         SLICE_SECS as f64 / SLICE_WINDOW_SECS as f64
+    } else {
+        0.0
     }
 }
 
@@ -286,7 +269,10 @@ pub struct FeeEvent {
 pub struct FeeSummary {
     /// False when no fee address ships.
     pub active: bool,
-    pub fee_address_xmr: &'static str,
+    /// The treasury every slice pays today. Lines written by builds before
+    /// 0.7.0 may name the retired direct-route Monero fee address instead;
+    /// they still parse and count (`recent` shows the address each paid).
+    pub fee_address: &'static str,
     pub total_slices: u64,
     pub total_fee_seconds: u64,
     pub recent: Vec<FeeEvent>,
@@ -328,7 +314,7 @@ pub fn summary_of(events: Vec<FeeEvent>) -> FeeSummary {
     let recent = events.iter().rev().take(20).cloned().collect();
     FeeSummary {
         active: slices_enabled(),
-        fee_address_xmr: FEE_ADDRESS_XMR,
+        fee_address: FEE_ADDRESS_TREASURY,
         total_slices: events.len() as u64,
         total_fee_seconds,
         recent,
@@ -378,37 +364,23 @@ pub struct SliceScheduler {
     slice_started_at: Option<u64>,
     failed_returns: u32,
     /// Where this scheduler's fee slices actually mine — what the ledger
-    /// records. The direct route's Monero fee address by default; the
-    /// unMineable route's treasury via `for_unmineable`.
+    /// records: the coin being mined and the treasury (or, per slice, the
+    /// affiliate — `set_fee_address`).
     fee_coin: Coin,
     fee_address: String,
 }
 
-impl Default for SliceScheduler {
-    fn default() -> Self {
+impl SliceScheduler {
+    /// A scheduler for a lane mining `coin` on unMineable: the ledger records
+    /// that coin and the treasury the slice really paid (the ledger must say
+    /// where hashes went).
+    pub fn for_unmineable(coin: Coin) -> Self {
         Self {
             on_fee: false,
             slice_started_at: None,
             failed_returns: 0,
-            fee_coin: Coin::Xmr,
-            fee_address: FEE_ADDRESS_XMR.to_string(),
-        }
-    }
-}
-
-impl SliceScheduler {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// A scheduler for the unMineable route: the ledger records the coin being
-    /// mined and the treasury the slice really paid, not the direct route's
-    /// Monero fee address (the ledger must say where hashes went).
-    pub fn for_unmineable(coin: Coin) -> Self {
-        Self {
             fee_coin: coin,
             fee_address: FEE_ADDRESS_TREASURY.to_string(),
-            ..Self::default()
         }
     }
 
@@ -421,20 +393,11 @@ impl SliceScheduler {
 
     /// The side the miner must be pointed at right now: the fee address only
     /// during a slice while ACTIVELY mining, the user's address every other
-    /// moment. `actively_mining` is the consumer's notion of "hashes are being
-    /// produced" (the desktop's `Mining` state; pasivd's nonzero hashrate) —
-    /// which is what makes a paused, warming, or errored miner structurally
-    /// unchargeable.
-    pub fn desired(&self, actively_mining: bool, mining_secs: u64) -> PayoutSide {
-        if actively_mining && in_fee_slice(mining_secs) {
-            PayoutSide::Fee
-        } else {
-            PayoutSide::User
-        }
-    }
-
-    /// `desired` on the unMineable route: 4% on every coin, with the slice
-    /// shape for how this miner switches (live re-login vs restart).
+    /// moment — with the slice shape for how this miner switches (live
+    /// re-login vs restart). `actively_mining` is the consumer's notion of
+    /// "hashes are being produced" (the desktop's `Mining` state; pasivd's
+    /// nonzero hashrate) — which is what makes a paused, warming, or errored
+    /// miner structurally unchargeable.
     pub fn desired_for(
         &self,
         kind: SwitchKind,
@@ -671,10 +634,13 @@ mod tests {
 
     #[test]
     fn the_ledger_names_the_address_the_slice_really_paid() {
-        let mut direct = SliceScheduler::new();
-        direct.confirmed(PayoutSide::Fee, 100, 10.0);
-        let ev = direct.confirmed(PayoutSide::User, 120, 10.0).unwrap();
-        assert_eq!((ev.coin, ev.address.as_str()), (Coin::Xmr, FEE_ADDRESS_XMR));
+        let mut cpu = SliceScheduler::for_unmineable(Coin::Xmr);
+        cpu.confirmed(PayoutSide::Fee, 100, 10.0);
+        let ev = cpu.confirmed(PayoutSide::User, 120, 10.0).unwrap();
+        assert_eq!(
+            (ev.coin, ev.address.as_str()),
+            (Coin::Xmr, FEE_ADDRESS_TREASURY)
+        );
 
         let mut usdt = SliceScheduler::for_unmineable(Coin::Prl);
         usdt.confirmed(PayoutSide::Fee, 100, 10.0);
@@ -688,7 +654,7 @@ mod tests {
 
     #[test]
     fn desired_for_never_charges_when_not_mining() {
-        let s = SliceScheduler::new();
+        let s = SliceScheduler::for_unmineable(Coin::Xmr);
         assert_eq!(
             s.desired_for(SwitchKind::Restart, false, 0),
             PayoutSide::User
@@ -748,17 +714,39 @@ mod tests {
 
     #[test]
     fn fee_address_is_valid_and_ships_the_engine_on() {
-        // A fee address ships (a signed-release change), so the engine is ON,
-        // and it must be a valid Monero address (checksum-carrying).
+        // A treasury ships (a signed-release change), so the engine is ON.
         assert!(
             slices_enabled(),
             "a shipped fee address turns the engine on"
         );
-        assert!(
-            crate::address::is_valid_xmr_address(FEE_ADDRESS_XMR),
-            "the fee address must be a well-formed Monero address (shape only — \
-             the checksum is not verified here, see the constant's note)"
+        assert_eq!(fee_fraction_unmineable(), 0.04);
+    }
+
+    /// Ledger lines written before 0.7.0 by the retired direct route name the
+    /// old Monero fee address. They must still parse, count and display — a
+    /// receipt is a receipt — even though no build writes them any more.
+    #[test]
+    fn pre_0_7_ledger_lines_with_the_retired_fee_address_still_read() {
+        const RETIRED_XMR_FEE_ADDRESS: &str =
+            "47jfXhesYLvN5M8Qzy5j7PCwd99kZKdwNKwxqonrdEDVVzopGUfNApn1NK98sPE7wgGzsEtvMYM1cZChVpDHasabFH1MZ1f";
+        let old = format!(
+            "{{\"started_at\":1785797656,\"ended_at\":1785797676,\"coin\":\"xmr\",\
+             \"address\":\"{RETIRED_XMR_FEE_ADDRESS}\",\"est_hashes\":130651}}"
         );
+        let new = serde_json::to_string(&FeeEvent {
+            started_at: 1_790_000_000,
+            ended_at: 1_790_000_020,
+            coin: Coin::Prl,
+            address: FEE_ADDRESS_TREASURY.into(),
+            est_hashes: 7,
+        })
+        .unwrap();
+        let s = summary_of(parse_ledger(&format!("{old}\n{new}\n")));
+        assert_eq!(s.total_slices, 2);
+        assert_eq!(s.total_fee_seconds, 40);
+        assert_eq!(s.recent[1].address, RETIRED_XMR_FEE_ADDRESS);
+        assert_eq!(s.recent[0].address, FEE_ADDRESS_TREASURY);
+        assert_eq!(s.fee_address, FEE_ADDRESS_TREASURY);
     }
 
     #[test]
@@ -772,9 +760,10 @@ mod tests {
 
     #[test]
     fn fee_slice_follows_the_4pct_window_schedule() {
-        // With an address shipped: the first SLICE_SECS of every SLICE_WINDOW_SECS
+        // With a treasury shipped: the LAST SLICE_SECS of every SLICE_WINDOW_SECS
         // of Mining time are the fee slice — exactly 4% — and nothing else.
         // The slice closes the window: a session that ends early never paid it.
+        let in_fee_slice = |s| in_fee_slice_for(SwitchKind::HotSwap, s);
         assert!(!in_fee_slice(0) && !in_fee_slice(SLICE_WINDOW_SECS - SLICE_SECS - 1));
         assert!(
             in_fee_slice(SLICE_WINDOW_SECS - SLICE_SECS) && in_fee_slice(SLICE_WINDOW_SECS - 1)
@@ -787,26 +776,38 @@ mod tests {
     }
 
     #[test]
-    fn fee_fraction_is_xmr_only_and_matches_the_slice_ratio() {
-        // The number Auto ranks on must equal what's actually charged: 4% on XMR,
-        // zero on every fee-free coin. A drift here would let Auto rank on a fee
-        // that isn't taken (or miss one that is).
-        assert_eq!(
-            fee_fraction(Coin::Xmr),
-            SLICE_SECS as f64 / SLICE_WINDOW_SECS as f64
-        );
-        assert_eq!(fee_fraction(Coin::Zeph), 0.0);
-        assert_eq!(fee_fraction(Coin::Sal), 0.0);
-        assert_eq!(fee_fraction(Coin::Vrsc), 0.0);
+    fn fee_fraction_is_four_percent_for_every_coin() {
+        // One route, one rule: the number an estimate nets out must equal
+        // what is actually charged, on every coin — the XMR-only rule of the
+        // retired direct route is gone (0.7.0).
+        for coin in [
+            Coin::Xmr,
+            Coin::Prl,
+            Coin::Zeph,
+            Coin::Sal,
+            Coin::Vrsc,
+            Coin::Rvn,
+            Coin::Erg,
+            Coin::Etc,
+        ] {
+            assert_eq!(
+                fee_fraction(coin),
+                SLICE_SECS as f64 / SLICE_WINDOW_SECS as f64,
+                "{coin:?}"
+            );
+        }
+        assert_eq!(fee_fraction(Coin::Xmr), fee_fraction_unmineable());
     }
 
     #[test]
     fn scheduler_full_slice_lifecycle_writes_one_event() {
-        let mut s = SliceScheduler::new();
+        let mut s = SliceScheduler::for_unmineable(Coin::Xmr);
+        let desired =
+            |s: &SliceScheduler, mining, secs| s.desired_for(SwitchKind::HotSwap, mining, secs);
         // Outside a slice, mining: stay on the user.
-        assert_eq!(s.desired(true, 250), PayoutSide::User);
+        assert_eq!(desired(&s, true, 250), PayoutSide::User);
         // Slice opens (the last 20 s of the window): fee side desired.
-        assert_eq!(s.desired(true, 480), PayoutSide::Fee);
+        assert_eq!(desired(&s, true, 480), PayoutSide::Fee);
         // Rising edge: no event, slice opens.
         assert!(s.confirmed(PayoutSide::Fee, 1_000, 5_000.0).is_none());
         assert_eq!(s.current(), PayoutSide::Fee);
@@ -819,23 +820,26 @@ mod tests {
         assert_eq!((ev.started_at, ev.ended_at), (1_000, 1_020));
         assert_eq!(ev.est_hashes, (5_000.0 * 20.0) as u64);
         assert_eq!(ev.coin, Coin::Xmr);
-        assert_eq!(ev.address, FEE_ADDRESS_XMR);
+        assert_eq!(ev.address, FEE_ADDRESS_TREASURY);
         // And staying on the user emits nothing.
         assert!(s.confirmed(PayoutSide::User, 1_030, 5_000.0).is_none());
     }
 
     #[test]
     fn scheduler_never_charges_when_not_actively_mining() {
-        let s = SliceScheduler::new();
+        let s = SliceScheduler::for_unmineable(Coin::Xmr);
         // Even inside the slice window, a paused/warming/idle miner belongs
         // to the user — this is never-list "fee time only in Mining".
-        assert_eq!(s.desired(false, 0), PayoutSide::User);
-        assert_eq!(s.desired(false, 505), PayoutSide::User);
+        for kind in [SwitchKind::HotSwap, SwitchKind::Restart] {
+            assert_eq!(s.desired_for(kind, false, 0), PayoutSide::User);
+            assert_eq!(s.desired_for(kind, false, 495), PayoutSide::User);
+            assert_eq!(s.desired_for(kind, false, 14_900), PayoutSide::User);
+        }
     }
 
     #[test]
     fn scheduler_failing_toward_fee_is_unbounded_retry() {
-        let mut s = SliceScheduler::new();
+        let mut s = SliceScheduler::for_unmineable(Coin::Xmr);
         // Failing to GET ONTO the fee address costs the user nothing; retry
         // forever, never stop the miner, never count it against the return
         // budget.
@@ -851,7 +855,7 @@ mod tests {
 
     #[test]
     fn scheduler_bounded_return_failures_stop_the_miner() {
-        let mut s = SliceScheduler::new();
+        let mut s = SliceScheduler::for_unmineable(Coin::Xmr);
         assert!(s.confirmed(PayoutSide::Fee, 1_000, 100.0).is_none());
         // Two failures: still retrying.
         assert_eq!(s.swap_failed(PayoutSide::User), SwapFailure::Retry);
@@ -868,7 +872,7 @@ mod tests {
 
     #[test]
     fn scheduler_success_resets_the_failure_budget() {
-        let mut s = SliceScheduler::new();
+        let mut s = SliceScheduler::for_unmineable(Coin::Xmr);
         assert_eq!(s.swap_failed(PayoutSide::User), SwapFailure::Retry);
         assert_eq!(s.swap_failed(PayoutSide::User), SwapFailure::Retry);
         // One confirmed swap clears the count — only CONSECUTIVE failures stop.
@@ -887,7 +891,7 @@ mod tests {
             started_at: s,
             ended_at: s + 20,
             coin: Coin::Xmr,
-            address: FEE_ADDRESS_XMR.into(),
+            address: FEE_ADDRESS_TREASURY.into(),
             est_hashes: 1,
         };
         let s = summary_of((0..25).map(|i| ev(i * 500)).collect());
@@ -912,7 +916,9 @@ mod tests {
     /// change it HERE first — then in both consumers.
     #[test]
     fn reconcile_discipline_conformance() {
-        const USER: &str = "4user";
+        const USER: &str = "XMR:4user.rig#drp0-8auk";
+        let fee_login = unmineable_fee_login("rig");
+        let fee_login = fee_login.as_str();
         struct ScriptedMiner {
             login: String,
             set_ok: bool,
@@ -936,14 +942,15 @@ mod tests {
         fn tick(
             sched: &mut SliceScheduler,
             miner: &mut ScriptedMiner,
+            fee: &str,
             actively_mining: bool,
             mining_secs: u64,
             now: u64,
             hashrate: f64,
         ) -> (Option<FeeEvent>, bool) {
-            let want = sched.desired(actively_mining, mining_secs);
+            let want = sched.desired_for(SwitchKind::HotSwap, actively_mining, mining_secs);
             let target = match want {
-                PayoutSide::Fee => FEE_ADDRESS_XMR,
+                PayoutSide::Fee => fee,
                 PayoutSide::User => USER,
             };
             match miner.read() {
@@ -962,19 +969,19 @@ mod tests {
         }
 
         // A full honest slice: swap in, mine the slice, swap out, ONE event.
-        let mut sched = SliceScheduler::new();
+        let mut sched = SliceScheduler::for_unmineable(Coin::Xmr);
         let mut m = ScriptedMiner {
             login: USER.into(),
             set_ok: true,
             applies: true,
             sets: 0,
         };
-        let (ev, stopped) = tick(&mut sched, &mut m, true, 480, 1_000, 500.0);
+        let (ev, stopped) = tick(&mut sched, &mut m, fee_login, true, 480, 1_000, 500.0);
         assert!(ev.is_none() && !stopped);
-        assert_eq!(m.login, FEE_ADDRESS_XMR, "slice opens on the fee address");
-        let (ev, stopped) = tick(&mut sched, &mut m, true, 490, 1_010, 500.0);
+        assert_eq!(m.login, fee_login, "slice opens on the fee address");
+        let (ev, stopped) = tick(&mut sched, &mut m, fee_login, true, 490, 1_010, 500.0);
         assert!(ev.is_none() && !stopped);
-        let (ev, stopped) = tick(&mut sched, &mut m, true, 505, 1_020, 500.0);
+        let (ev, stopped) = tick(&mut sched, &mut m, fee_login, true, 505, 1_020, 500.0);
         assert!(!stopped);
         let ev = ev.expect("leaving the slice closes exactly one event");
         assert_eq!((ev.started_at, ev.ended_at), (1_000, 1_020));
@@ -984,7 +991,7 @@ mod tests {
 
         // The lying PUT: Ok without effect. The discipline keeps retrying —
         // the read-back never matches, so the set is re-issued every tick.
-        let mut sched = SliceScheduler::new();
+        let mut sched = SliceScheduler::for_unmineable(Coin::Xmr);
         let mut m = ScriptedMiner {
             login: USER.into(),
             set_ok: true,
@@ -992,13 +999,13 @@ mod tests {
             sets: 0,
         };
         for i in 0..3 {
-            let _ = tick(&mut sched, &mut m, true, 480, 2_000 + i, 500.0);
+            let _ = tick(&mut sched, &mut m, fee_login, true, 480, 2_000 + i, 500.0);
         }
         assert_eq!(m.sets, 3, "a lying PUT is retried, never believed");
         assert_eq!(m.login, USER);
 
         // Failing TOWARD the fee is unbounded retry — the user loses nothing.
-        let mut sched = SliceScheduler::new();
+        let mut sched = SliceScheduler::for_unmineable(Coin::Xmr);
         let mut m = ScriptedMiner {
             login: USER.into(),
             set_ok: false,
@@ -1006,21 +1013,29 @@ mod tests {
             sets: 0,
         };
         for i in 0..10 {
-            let (_, stopped) = tick(&mut sched, &mut m, true, 480, 3_000 + i, 500.0);
+            let (_, stopped) = tick(&mut sched, &mut m, fee_login, true, 480, 3_000 + i, 500.0);
             assert!(!stopped, "failing toward the FEE side must never stop");
         }
 
         // Failing to RETURN is bounded: the failsafe fires, mining stops.
-        let mut sched = SliceScheduler::new();
+        let mut sched = SliceScheduler::for_unmineable(Coin::Xmr);
         let mut m = ScriptedMiner {
-            login: FEE_ADDRESS_XMR.into(),
+            login: fee_login.into(),
             set_ok: false,
             applies: false,
             sets: 0,
         };
         let mut fired = 0;
         for i in 0..FEE_RETURN_MAX_RETRIES {
-            let (_, stopped) = tick(&mut sched, &mut m, true, 100, 4_000 + u64::from(i), 500.0);
+            let (_, stopped) = tick(
+                &mut sched,
+                &mut m,
+                fee_login,
+                true,
+                100,
+                4_000 + u64::from(i),
+                500.0,
+            );
             if stopped {
                 fired += 1;
             }
@@ -1028,9 +1043,12 @@ mod tests {
         assert_eq!(fired, 1, "the failsafe fires exactly once at the bound");
 
         // Not actively mining NEVER desires the fee side, whatever the clock.
-        let sched = SliceScheduler::new();
-        for secs in [0, 5, 19, 250, 500, 505] {
-            assert_eq!(sched.desired(false, secs), PayoutSide::User);
+        let sched = SliceScheduler::for_unmineable(Coin::Xmr);
+        for secs in [0, 5, 19, 250, 480, 499, 500, 505] {
+            assert_eq!(
+                sched.desired_for(SwitchKind::HotSwap, false, secs),
+                PayoutSide::User
+            );
         }
     }
 }
