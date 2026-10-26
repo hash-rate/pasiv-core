@@ -26,7 +26,7 @@ agreement. PRs without it can't be merged, however good the code — sorry.
 - **The never-list is binding** ([docs/FEES.md](docs/FEES.md) §4). A PR that
   violates it will be closed regardless of technical merit.
 - **The fee constants only change with a release.** `FEE_ADDRESS_TREASURY`,
-  `FEE_ADDRESS_XMR`, `SLICE_WINDOW_SECS`, `SLICE_SECS`, the restart-based
+  `SLICE_WINDOW_SECS`, `SLICE_SECS`, the restart-based
   slice in `slice_shape`, and `UNMINEABLE_REFERRAL` are deliberately
   compile-time; a PR touching them needs a maintainer-driven release and
   changelog entry.

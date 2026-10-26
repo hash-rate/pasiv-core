@@ -231,16 +231,22 @@ pub(crate) fn pool() -> String {
     use pasiv_core::unmineable::Algo;
     format!("{}:{}", Algo::RandomX.host(), Algo::PORT)
 }
+/// The CPU engine: pasiv-rx, Pasiv's own RandomX miner (hash-rate/pasiv-rx,
+/// GPL-3.0), the static musl build — the desktop's engine on every platform
+/// from 0.7.2. It is an XMRig drop-in for the CLI/API slice used here, and it
+/// has no developer donation (stock XMRig's 1% floor went with it).
 pub(crate) const XMRIG_URL: &str =
-    "https://github.com/xmrig/xmrig/releases/download/v6.26.0/xmrig-6.26.0-linux-static-x64.tar.gz";
+    "https://github.com/hash-rate/pasiv-releases/releases/download/cpu-engine-v0.1.2/pasiv-rx-0.1.2-linux-x64-static.tar.gz";
 /// sha256 of the release TARBALL, checked before it is even decompressed.
 pub(crate) const XMRIG_SHA256: &str =
-    "fc6f8ae5f64e4f17481f7e3be29a1c56949f216a998414188003eae1db20c9e5";
+    "e4438c3a7f54e14e5f90f8f9c8eaa86752c81a60a1f6311f0a65a7d7b7cf8a74";
 /// sha256 of the EXTRACTED binary, re-checked on every start so a cached file
 /// can never drift from what we pinned (and so a version bump actually lands).
 pub(crate) const XMRIG_BIN_SHA256: &str =
-    "b20f39fc00d242e706b6c30367ad811c676e0575050a4ec2f30104b696944b49";
-pub(crate) const XMRIG_DIR_IN_TAR: &str = "xmrig-6.26.0";
+    "331404b3a05d39cc60c1e4e8e731946e91f005bda05ec6d060f80ddd729e0c8b";
+pub(crate) const XMRIG_DIR_IN_TAR: &str = "pasiv-rx-0.1.2";
+/// The engine's file name, in the tarball and in the data dir.
+pub(crate) const ENGINE_BIN: &str = "pasiv-rx";
 pub(crate) const HTTP_PORT: u16 = 42999;
 
 /// Live XMR network stats, the same source the desktop's profit ranking
