@@ -1,7 +1,7 @@
 //! `pasivd doctor` — one PASS/WARN/FAIL pass over everything a headless node
 //! needs. Split from main.rs 2026-08-26; behaviour unchanged.
 
-use crate::{api, config_path, data_dir, fee_ledger_path, pool, DeviceConfig, XMRIG_BIN_SHA256};
+use crate::{api, config_path, data_dir, fee_ledger_path, pool, DeviceConfig, ENGINE_BIN, XMRIG_BIN_SHA256};
 use pasiv_core::address::is_valid_xmr_address;
 use pasiv_core::fee;
 use sha2::Digest;
@@ -141,22 +141,22 @@ pub async fn cmd_doctor() -> Result<(), String> {
 
     // miner binary: present + still matching the pin (a drifted cache is the
     // desktop's v0.4.28 bug class).
-    let bin = data_dir().join("xmrig");
+    let bin = data_dir().join(ENGINE_BIN);
     if bin.exists() {
         match std::fs::read(&bin) {
             Ok(bytes) => {
                 let got = hex::encode(sha2::Sha256::digest(&bytes));
                 if got == XMRIG_BIN_SHA256 {
-                    report("PASS", "binary", "xmrig matches the pinned sha256".into());
+                    report("PASS", "binary", "pasiv-rx matches the pinned sha256".into());
                 } else {
                     report(
                         "FAIL",
                         "binary",
-                        format!("xmrig sha256 {got} != pinned — will be re-fetched on next run"),
+                        format!("pasiv-rx sha256 {got} != pinned — will be re-fetched on next run"),
                     );
                 }
             }
-            Err(e) => report("FAIL", "binary", format!("xmrig unreadable: {e}")),
+            Err(e) => report("FAIL", "binary", format!("pasiv-rx unreadable: {e}")),
         }
     } else {
         report(

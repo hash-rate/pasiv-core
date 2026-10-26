@@ -93,7 +93,30 @@ to `verify OK` on real GPUs (RTX 4060, RTX 4070 SUPER) with no runtime library
 beside them, and the Windows run from a scanned folder recorded 0 Defender
 detections.
 
-## XMRig 6.26.0
+## pasiv-rx 0.1.2 (the CPU engine from Pasiv 0.7.2 / pasivd 0.1.13)
+
+Pasiv's own RandomX CPU miner: <https://github.com/hash-rate/pasiv-rx>, GPL-3.0,
+on tevador/RandomX 1.2.1 (BSD-3) with three Pasiv patches (`patches/`). It
+replaces XMRig on every platform and has no developer donation. Built by the
+repo's `build.yml` (run 40314759725, commit
+`957b9e02dc9c9404808b2f2214cbd59b10c009b8`) and published as prerelease
+`cpu-engine-v0.1.2` on hash-rate/pasiv-releases by `tool/cpu-engine-release.sh`
+(pasiv repo); the exact corresponding source is `pasiv-rx-0.1.2-source.tar.gz`
+in that release.
+
+| Target | Archive | Archive sha256 | Member | Binary sha256 |
+|---|---|---|---|---|
+| `x86_64-pc-windows-msvc` | `pasiv-rx-0.1.2-windows-x64.zip` | `6395e5b19c28a6b8a22c8968ea714532ed58060f1950d7b8606616d0c9e1f645` | `pasiv-rx-0.1.2/pasiv-rx.exe` (Authenticode, DRAGON HEDGE PTY LTD, Certum RFC3161) | `d77de4020ef442ac5e389008648d8a82a3dedbc7687e29d912c038d966400356` |
+| `x86_64-unknown-linux-gnu` | `pasiv-rx-0.1.2-linux-x64.tar.gz` | `a5c2bc53bcbafea9ac74038e34ea8f26e8542da05703239b54fa97ade21f074c` | `pasiv-rx-0.1.2/pasiv-rx` | `941aacd5b769ec676a819c57b7055821db967feb10608d76d21e6be615fe5540` |
+| `x86_64-unknown-linux-musl` (pasivd) | `pasiv-rx-0.1.2-linux-x64-static.tar.gz` | `e4438c3a7f54e14e5f90f8f9c8eaa86752c81a60a1f6311f0a65a7d7b7cf8a74` | `pasiv-rx-0.1.2/pasiv-rx` | `331404b3a05d39cc60c1e4e8e731946e91f005bda05ec6d060f80ddd729e0c8b` |
+| `aarch64-apple-darwin` | `pasiv-rx-0.1.2-macos-arm64.tar.gz` | `92d8c6988181340cedc5d8643d3ccdc88635958f031ccd8faf07727aa2a1bfd4` | `pasiv-rx-0.1.2/pasiv-rx` (Developer-ID-signed inside the app bundle) | `d649ec2a5f082b7fa0e7f0428cdfc7dfaa017f50f18d4f2ff68d9f99c8387f64` |
+
+Verified before publishing: the signed and unsigned Windows builds mined live
+from a scanned, unexcluded folder (30 min and 60 min, 0 rejected, 0 Defender
+detections); pasivd 0.1.13 migrated a live XMRig node on the rack (engine
+fetched and verified, XMRig retired after, 25/25 shares, fee slice swapped).
+
+## XMRig 6.26.0 (retired in Pasiv 0.7.2 / pasivd 0.1.13)
 
 Upstream: <https://github.com/xmrig/xmrig>. Fetched on demand since 2026-08-26;
 before the switch the previously committed binaries were confirmed

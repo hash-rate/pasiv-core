@@ -3,7 +3,7 @@
 //! contract in `pasiv_core::xmrig` (which owns every decision — URLs, the
 //! http block, parsers). Split from main.rs 2026-08-26; behaviour unchanged.
 
-use crate::{data_dir, HTTP_PORT, XMRIG_BIN_SHA256, XMRIG_DIR_IN_TAR, XMRIG_SHA256, XMRIG_URL};
+use crate::{data_dir, ENGINE_BIN, HTTP_PORT, XMRIG_BIN_SHA256, XMRIG_DIR_IN_TAR, XMRIG_SHA256, XMRIG_URL};
 use sha2::Digest;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -14,7 +14,7 @@ use std::time::Duration;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub async fn ensure_xmrig(client: &reqwest::Client) -> Result<PathBuf, String> {
-    let bin = data_dir().join("xmrig");
+    let bin = data_dir().join(ENGINE_BIN);
     // Verify on EVERY start, not just first install. Checking only `exists()`
     // meant the pin ran once in a machine's lifetime: a tampered or truncated
     // binary was then trusted forever, and bumping XMRIG_SHA256 in a new
@@ -31,7 +31,8 @@ pub async fn ensure_xmrig(client: &reqwest::Client) -> Result<PathBuf, String> {
     if bin.exists() {
         match std::fs::read(&bin) {
             Ok(bytes) if hex::encode(sha2::Sha256::digest(&bytes)) == XMRIG_BIN_SHA256 => {
-                return Ok(bin)
+                retire_legacy_xmrig();
+                return Ok(bin);
             }
             Ok(_) => eprintln!(
                 "xmrig on disk does not match the pinned sha256 — fetching the pinned build"
@@ -39,7 +40,7 @@ pub async fn ensure_xmrig(client: &reqwest::Client) -> Result<PathBuf, String> {
             Err(e) => eprintln!("could not read cached xmrig ({e}) — fetching the pinned build"),
         }
     }
-    println!("fetching xmrig (sha256-verified)…");
+    println!("fetching the CPU engine (sha256-verified)…");
     let bytes = client
         .get(XMRIG_URL)
         .timeout(DOWNLOAD_TIMEOUT)
@@ -57,7 +58,7 @@ pub async fn ensure_xmrig(client: &reqwest::Client) -> Result<PathBuf, String> {
     }
     let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(&bytes[..]));
     let mut ar = tar::Archive::new(gz);
-    let want = format!("{XMRIG_DIR_IN_TAR}/xmrig");
+    let want = format!("{XMRIG_DIR_IN_TAR}/{ENGINE_BIN}");
     // Unpack to a temp path and rename into place: writing straight to `bin`
     // meant a crash mid-unpack left a truncated binary that the old
     // exists()-only check would then execute forever. The rename is also
@@ -91,7 +92,18 @@ pub async fn ensure_xmrig(client: &reqwest::Client) -> Result<PathBuf, String> {
         let _ = std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o755));
     }
     std::fs::rename(&partial, &bin).map_err(|e| e.to_string())?;
+    retire_legacy_xmrig();
     Ok(bin)
+}
+
+/// pasivd ≤ 0.1.12 cached stock XMRig at `<data>/xmrig`. Removed only once the
+/// engine is on disk and verified — a node that cannot reach the release host
+/// keeps its old miner until the replacement is proven (never the other way).
+fn retire_legacy_xmrig() {
+    let legacy = data_dir().join("xmrig");
+    if legacy.exists() && std::fs::remove_file(&legacy).is_ok() {
+        println!("retired the legacy xmrig binary (the CPU engine is pasiv-rx now)");
+    }
 }
 
 pub struct Miner {
@@ -112,8 +124,9 @@ pub fn xmrig_args(pool: &str, user: &str, runtime_config: &str) -> Vec<String> {
         "-p".into(),
         "pasiv".into(),
         "-k".into(),
+        // pasiv-rx has no donation; it accepts the flag for XMRig parity.
         "--donate-level".into(),
-        "1".into(),
+        "0".into(),
         "--no-color".into(),
         "-c".into(),
         runtime_config.into(),

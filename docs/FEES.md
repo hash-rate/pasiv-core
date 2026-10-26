@@ -8,6 +8,21 @@ Pasiv makes money **only when you do.** The mechanics below are documented in
 full — and, since this repository exists, implemented in the open — so anyone
 can see exactly what they pay and confirm it against the app's own fee ledger.
 
+> **Revision 2026-10-26 (Pasiv 0.7.2, pasivd 0.1.13): the CPU miner is
+> Pasiv's own, everywhere.** Changed, in the open, as never-list item 3 requires:
+> 1. **XMRig's 1% is gone on every platform.** Windows Defender removes stock
+>    XMRig on sight — even a copy Pasiv signs — so Windows used to ask for a
+>    one-time permission to exclude Pasiv's miner folder. From 0.7.2 the CPU
+>    lane on Windows, macOS, Linux and pasivd runs **pasiv-rx**, Pasiv's own
+>    RandomX miner (GPL-3.0, built on the BSD-3 RandomX library; the Windows
+>    build is signed by Pasiv; its source ships with every release, see
+>    [SIDECAR-PROVENANCE.md](SIDECAR-PROVENANCE.md)). It has no developer
+>    donation, so the only third-party fee left is the pool's. Pasiv's own 4%
+>    is unchanged: same slice, same treasury, same ledger.
+> 2. **Never-list item 2** loses its last sentence, "(Auto mode is opt-in and
+>    shows its reasoning.)": Auto mode was removed in 0.7.0, so it described a
+>    setting that no longer exists. Nothing else in the item changes.
+
 > **Revision 2026-10-24 (Pasiv 0.7.0, pasivd 0.1.12): one payout route, and
 > "Advanced: native coins".** Changed, in the open, as never-list item 3
 > requires:
@@ -140,17 +155,13 @@ you to discover.
 | Pasiv's referral | 0.25% | Paid **to Pasiv by unMineable, out of unMineable's own fee** | Not taken from your earnings; disclosed because Pasiv benefits |
 | Share & earn (optional) | 1 or 2 of Pasiv's 4 points | Paid **to the friend whose code you entered, out of Pasiv's 4%** | Not an extra fee — it's part of the 4%; only if you entered a code; ends after 12 months |
 | ~~SRBMiner dev fee~~ | ~~2%~~ | — | Gone since 0.6.11: Pasiv's own build of the Pearl engine runs with its fee off, so nothing on the GPU lane goes to a third-party developer |
-| XMRig dev donation | 1% | The XMRig developers | Built into the mining engine Pasiv drives |
+| ~~XMRig dev donation~~ | ~~1%~~ | — | Gone from 0.7.2 (pasivd 0.1.13): the CPU miner is Pasiv's own (pasiv-rx) on every platform and has no developer donation, so nothing on the CPU lane goes to a third-party developer |
 
-**On XMRig's 1%.** Pasiv runs the *stock, official* XMRig binary — fetched from
-XMRig's own releases and SHA-256-verified — which carries a 1% developer
-donation floor, launched with `--donate-level 1`, the minimum a stock binary
-accepts. Compiling the donation out is GPL-permitted and was proven to work;
-we deliberately don't. Removing it would return roughly fifty cents per node
-per year while costing the checksum-verified official supply chain, the
-binary's years of antivirus reputation, and a fork to maintain forever. The
-honest framing stands: **the engine is XMRig, its developers keep 1%, and we
-do not touch it.**
+**On XMRig's 1% (history).** Until 0.7.2 Pasiv ran the *stock, official*
+XMRig binary, which carries a 1% developer donation floor, and deliberately left
+it in: removing it was worth about fifty cents per node per year and would have
+meant maintaining our own miner. Defender made us build that miner anyway
+(pasiv-rx), so from 0.7.2 the CPU lane runs it everywhere and the 1% is gone.
 
 ---
 
@@ -252,8 +263,9 @@ Pasiv will **not**, in any build:
    on a machine with no payout address of the user's set up. Once one is set
    up, Pasiv starts with the computer and mines by default; an explicit Stop
    (app, tray or phone) is final across every restart until the user starts
-   again. (Auto mode is opt-in and shows its reasoning.) *Revised 2026-10-07
-   for 0.6.7: previously "never mine at all without an explicit start".*
+   again. *Revised 2026-10-07 for 0.6.7: previously "never mine at all
+   without an explicit start". Revised 2026-10-26 for 0.7.2: the sentence
+   about Auto mode went with Auto mode (removed in 0.7.0).*
 3. Change the Pasiv fee percentage or fee address **without a versioned
    changelog entry and a new signed release.** (Both are compile-time
    constants in this repository.)
