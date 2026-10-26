@@ -134,9 +134,11 @@ pub fn unmineable_fee_login(worker: &str) -> String {
 //
 // The fee stays exactly 4% of mining time and the miner pays nothing extra.
 // When the miner entered a friend's code, a SHARE of Pasiv's own fee slices
-// mines to the friend's address instead of the treasury: 1 slice in every 4
-// (1 of the 4 points) for a regular code, 2 in 4 for a creator code, for 12
-// months from the day the code was confirmed. The pool pays the affiliate
+// mines to the friend's address instead of the treasury: since 2026-10-27
+// every code gets 2 slices in every 4 (2 of the 4 points, 2% of the rig's
+// gross; Pasiv keeps 2%), for 12 months from the day the code was confirmed.
+// Until then a regular code got 1 in 4 and a creator code 2 in 4; the server
+// decides the share and now reports 2 for every code. The pool pays the affiliate
 // directly; Pasiv never holds anything. The affiliate address is chosen by
 // the MINER (by entering a code and confirming what it pays), is pinned on
 // their machine, and every slice lands in their fee ledger with the address
@@ -156,8 +158,10 @@ pub struct Affiliate {
     pub code: String,
     pub asset: AffiliateAsset,
     pub address: String,
-    /// Points of the 4% that go to the affiliate: 1 (a regular code) or 2 (a
-    /// creator code). Anything else is treated as invalid.
+    /// Points of the 4% that go to the affiliate. Every code is 2 since
+    /// 2026-10-27; 1 (the old regular-code share) is still accepted, so a pin
+    /// made before then stays valid until the daily re-check moves it to 2.
+    /// Anything else is treated as invalid.
     pub share_of_4: u8,
     /// Unix seconds; from then on every slice goes back to the treasury.
     pub until_unix: u64,
