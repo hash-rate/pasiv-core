@@ -3,7 +3,9 @@
 //! contract in `pasiv_core::xmrig` (which owns every decision — URLs, the
 //! http block, parsers). Split from main.rs 2026-08-26; behaviour unchanged.
 
-use crate::{data_dir, ENGINE_BIN, HTTP_PORT, XMRIG_BIN_SHA256, XMRIG_DIR_IN_TAR, XMRIG_SHA256, XMRIG_URL};
+use crate::{
+    data_dir, ENGINE_BIN, HTTP_PORT, XMRIG_BIN_SHA256, XMRIG_DIR_IN_TAR, XMRIG_SHA256, XMRIG_URL,
+};
 use sha2::Digest;
 use std::path::PathBuf;
 use std::process::Stdio;
