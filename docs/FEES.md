@@ -8,6 +8,31 @@ Pasiv makes money **only when you do.** The mechanics below are documented in
 full — and, since this repository exists, implemented in the open — so anyone
 can see exactly what they pay and confirm it against the app's own fee ledger.
 
+> **Revision 2026-10-27: Share & earn pays 2 of 4 on every code.** Changed,
+> in the open, as never-list item 3 requires:
+> 1. **Every code now earns 2 of Pasiv's 4 points** — 2 fee slices in every
+>    4, i.e. 2% of the referred rig's gross mining, for 12 months from the
+>    day the code was confirmed. Pasiv keeps 2%. Until today a regular code
+>    earned 1 point (1%) and a creator code 2; **there is no higher creator
+>    rate any more**. The miner still pays exactly 4%, never more. This is
+>    live on the server today (it reports every code as paying 2 of 4), so
+>    installs on older versions pay their friend 2% too, from their next
+>    daily re-check. The core still accepts a pinned share of 1 or 2
+>    ([`Affiliate::is_valid`](../crates/pasiv-core/src/fee.rs)), so an old pin
+>    stays valid until that re-check moves it.
+> 2. **From Pasiv 0.7.3, a code needs no sign-in.** Every install can get an
+>    auto-issued, readable code (like `amber-otter-42`) tied to the USDT or BTC
+>    payout address it already uses on unMineable; signing in still lets you
+>    pick a custom code. A native-coin payout address (PRL or XMR, "Advanced")
+>    cannot receive a code's slices — such a user needs a USDT or BTC address
+>    for their code.
+> 3. **Headless `pasivd` nodes do not pay friend codes.** Share & earn is
+>    desktop-only; every slice a node mines goes to the treasury, and
+>    `pasivd claim` now says so.
+> 4. **Payout threshold, stated plainly.** unMineable pays USDT from 1.5 USDT.
+>    An affiliate who does not also mine to that address waits until the
+>    friends' slices alone cross it.
+
 > **Revision 2026-10-26 (Pasiv 0.7.2, pasivd 0.1.13): the CPU miner is
 > Pasiv's own, everywhere.** Changed, in the open, as never-list item 3 requires:
 > 1. **XMRig's 1% is gone on every platform.** Windows Defender removes stock
@@ -153,7 +178,7 @@ you to discover.
 |---|---|---|---|
 | unMineable pool fee | 0.75% | unMineable (the pool, on every payout asset) | 1%, lowered to 0.75% by Pasiv's referral code in your login |
 | Pasiv's referral | 0.25% | Paid **to Pasiv by unMineable, out of unMineable's own fee** | Not taken from your earnings; disclosed because Pasiv benefits |
-| Share & earn (optional) | 1 or 2 of Pasiv's 4 points | Paid **to the friend whose code you entered, out of Pasiv's 4%** | Not an extra fee — it's part of the 4%; only if you entered a code; ends after 12 months |
+| Share & earn (optional) | 2 of Pasiv's 4 points (2%) | Paid **to the friend whose code you entered, out of Pasiv's 4%** | Not an extra fee — it's part of the 4%; every code alike since 2026-10-27 (was 1 point, 2 for creator codes); only if you entered a code; ends after 12 months; desktop only |
 | ~~SRBMiner dev fee~~ | ~~2%~~ | — | Gone since 0.6.11: Pasiv's own build of the Pearl engine runs with its fee off, so nothing on the GPU lane goes to a third-party developer |
 | ~~XMRig dev donation~~ | ~~1%~~ | — | Gone from 0.7.2 (pasivd 0.1.13): the CPU miner is Pasiv's own (pasiv-rx) on every platform and has no developer donation, so nothing on the CPU lane goes to a third-party developer |
 
@@ -199,11 +224,12 @@ The fee is **time-sliced hashrate**, identical in mechanism to XMRig's dev fee
   [`in_fee_slice_for`](../crates/pasiv-core/src/fee.rs)): a pure function of
   time spent mining, which is what makes the percentage structural rather
   than promised.
-- **A friend's slices** (Share & earn) are the last 1 or 2 of every group of
-  4 fee slices — counted over the life of the install, persisted on disk, so
+- **A friend's slices** (Share & earn) are the last 2 of every group of
+  4 fee slices (2%; since 2026-10-27 for every code — before that 1 for a
+  regular code) — counted over the life of the install, persisted on disk, so
   a machine that mines in short sessions still hands its friend exactly their
-  share over time (2026-09-28). `pasivd` has no Share & earn; all its slices
-  go to the treasury.
+  share over time (2026-09-28). `pasivd` has no Share & earn and pays no
+  friend code; all its slices go to the treasury.
 
 **Where to read it:**
 - The schedule, the compile-time **fee address**, and the ledger format:

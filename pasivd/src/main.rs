@@ -493,6 +493,10 @@ async fn cmd_claim() -> Result<(), String> {
                 println!("    app (Wallets) and it syncs here automatically.");
             }
             println!(
+                "  {}",
+                ui::dim("Headless nodes don't pay friend codes (Share & earn is desktop-only).")
+            );
+            println!(
                 "  Start mining:  {}",
                 ui::bold("sudo systemctl enable --now pasivd")
             );
